@@ -4,6 +4,7 @@
 
 ```text
 NetBar/
+├── LICENSE                         # MIT 开源许可证
 ├── Resources/                      # Info.plist 与应用图标
 ├── scripts/verify.sh               # 本地测试、构建与签名验证
 ├── Sources/NetBar/                 # 菜单栏应用、界面与网络管理逻辑

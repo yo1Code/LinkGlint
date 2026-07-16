@@ -2,6 +2,7 @@
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
 ![Swift 5.10](https://img.shields.io/badge/Swift-5.10-F05138?logo=swift&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 一个原生 macOS 网络管理工具。它会读取系统中的 Wi‑Fi、有线网络、VPN
 以及其他网络服务，并允许从主窗口或菜单栏启用、停用及切换指定服务；Wi‑Fi
@@ -98,3 +99,8 @@ ARCHS="$(uname -m)" ./build_app.sh
 项目目录及运行结构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，版本变化见
 [`CHANGELOG.md`](CHANGELOG.md)。构建产物、测试临时文件和本地发布包均通过
 `.gitignore` 排除，不进入源码仓库。
+
+## 许可证
+
+NetBar 使用宽松的 [MIT License](LICENSE)。你可以使用、复制、修改、分发及用于
+商业项目，但需要在副本或软件的主要部分中保留版权和许可证声明。

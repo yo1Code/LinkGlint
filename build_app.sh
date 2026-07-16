@@ -27,6 +27,7 @@ else
 fi
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/NetBar.icns" "$APP/Contents/Resources/NetBar.icns"
+cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE.txt"
 chmod +x "$APP/Contents/MacOS/NetBar"
 chmod +x "$APP/Contents/Library/PrivilegedHelperTools/NetBarHelper"
 
