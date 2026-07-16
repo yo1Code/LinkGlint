@@ -1,8 +1,8 @@
 import XCTest
-@testable import NetBar
+@testable import LinkGlint
 
 final class UsageTrackerTests: XCTestCase {
-    private let suite = "local.codex.NetBar.tests.usage"
+    private let suite = "local.codex.LinkGlint.tests.usage"
     private var defaults: UserDefaults!
     private var calendar: Calendar!
 

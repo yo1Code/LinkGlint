@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var refreshTimer: Timer?
     private var trafficTimer: Timer?
     private let pathMonitor = NWPathMonitor()
-    private let pathMonitorQueue = DispatchQueue(label: "local.codex.NetBar.path-monitor")
+    private let pathMonitorQueue = DispatchQueue(label: "local.codex.LinkGlint.path-monitor")
     private var pendingPathRefresh: DispatchWorkItem?
     private var isRefreshing = false
     private var isSamplingTraffic = false
@@ -48,13 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Preserve the status-item placement chosen by users of NetBar 3.x.
         statusItem.autosaveName = "local.codex.NetBar.network-status"
         statusItem.isVisible = true
         statusItem.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "网络管理")
         // Keep a text label visible as well. This avoids an apparently "missing"
         // app when a system symbol is unavailable or hard to spot among many items.
         applyMenuBarAppearance()
-        statusItem.button?.toolTip = "NetBar 网络管理"
+        statusItem.button?.toolTip = "LinkGlint 网络管理"
 
         createMainWindow()
         showLoadingMenu()
@@ -115,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // interrupting the user's workflow with another dialog.
         statusItem.button?.title = "仍在菜单栏运行"
         statusItem.button?.imagePosition = .imageLeading
-        statusItem.button?.toolTip = "NetBar 仍在菜单栏运行；从菜单选择“退出 NetBar”可完全结束"
+        statusItem.button?.toolTip = "LinkGlint 仍在菜单栏运行；从菜单选择“退出 LinkGlint”可完全结束"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
             self?.applyMenuBarAppearance()
             self?.updateStatusIcon(self?.lastServices ?? [])
@@ -388,12 +389,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         loginItem.state = loginItemState
         menu.addItem(loginItem)
 
-        let preferencesItem = NSMenuItem(title: "NetBar 偏好设置…", action: #selector(showPreferences), keyEquivalent: "")
+        let preferencesItem = NSMenuItem(title: "LinkGlint 偏好设置…", action: #selector(showPreferences), keyEquivalent: "")
         preferencesItem.target = self
         menu.addItem(preferencesItem)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出 NetBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "退出 LinkGlint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
 
@@ -404,11 +405,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: presentation.symbolName, accessibilityDescription: "网络状态")
         applyMenuBarAppearance()
         statusItem.button?.toolTip = active.map {
-            var text = "NetBar · 已连接 · \($0.name)"
+            var text = "LinkGlint · 已连接 · \($0.name)"
             if let ssid = $0.ssid { text += " · \(ssid)" }
             if let ip = $0.ipAddress { text += " · \(ip)" }
             return text
-        } ?? "NetBar · 离线 · 当前无网络连接"
+        } ?? "LinkGlint · 离线 · 当前无网络连接"
     }
 
     private func schedulePathRefresh() {
@@ -624,7 +625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = currentState == .needsRepair ? "修复免密码网络权限" : "首次配置免密码网络切换"
-        alert.informativeText = "下一步会显示一次 macOS 管理员授权。NetBar 将安装只允许网络设置操作的本机助手；完成后，日常切换和登录启动均不再输入密码。"
+        alert.informativeText = "下一步会显示一次 macOS 管理员授权。LinkGlint 将安装只允许网络设置操作的本机助手；完成后，日常切换和登录启动均不再输入密码。"
         alert.addButton(withTitle: currentState == .needsRepair ? "修复权限" : "开始配置")
         alert.addButton(withTitle: "稍后")
         NSApp.activate(ignoringOtherApps: true)
@@ -755,7 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if SMAppService.mainApp.status == .requiresApproval {
                 let alert = NSAlert()
                 alert.messageText = "需要批准登录项"
-                alert.informativeText = "请在“系统设置 → 通用 → 登录项”中允许 NetBar。"
+                alert.informativeText = "请在“系统设置 → 通用 → 登录项”中允许 LinkGlint。"
                 alert.addButton(withTitle: "打开登录项设置")
                 alert.addButton(withTitle: "稍后")
                 NSApp.activate(ignoringOtherApps: true)
@@ -944,7 +945,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "重置今天的网络用量？"
-        alert.informativeText = "只会清除 NetBar 从本机接口统计的今日累计值，不会影响网络设置。"
+        alert.informativeText = "只会清除 LinkGlint 从本机接口统计的今日累计值，不会影响网络设置。"
         alert.addButton(withTitle: "重置")
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
@@ -982,7 +983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "NetBar 偏好设置"
+        window.title = "LinkGlint 偏好设置"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.titlebarAppearsTransparent = true
@@ -1062,7 +1063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         accessPanel.fillColor = NSColor.systemBlue.withAlphaComponent(0.055)
         accessPanel.contentView?.addSubview(accessStack)
 
-        let closeHint = NSTextField(wrappingLabelWithString: "关闭主窗口后 Dock 图标会自动隐藏，NetBar 继续在菜单栏运行；从菜单选择“退出 NetBar”可完全结束。登录时启动使用 macOS 原生登录项，不需要管理员密码。如暂时看不到状态项，请展开菜单栏隐藏区域并按住 ⌘ 将 NetBar 拖到常驻区域。")
+        let closeHint = NSTextField(wrappingLabelWithString: "关闭主窗口后 Dock 图标会自动隐藏，LinkGlint 继续在菜单栏运行；从菜单选择“退出 LinkGlint”可完全结束。登录时启动使用 macOS 原生登录项，不需要管理员密码。如暂时看不到状态项，请展开菜单栏隐藏区域并按住 ⌘ 将 LinkGlint 拖到常驻区域。")
         closeHint.textColor = .tertiaryLabelColor
         closeHint.font = .systemFont(ofSize: 11)
 
@@ -1161,8 +1162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func exportDiagnosticReport() {
         let panel = NSSavePanel()
-        panel.title = "导出 NetBar 诊断报告"
-        panel.nameFieldStringValue = "NetBar-诊断报告-\(reportFileTimestamp()).txt"
+        panel.title = "导出 LinkGlint 诊断报告"
+        panel.nameFieldStringValue = "LinkGlint-诊断报告-\(reportFileTimestamp()).txt"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -1178,9 +1179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let formatter = ISO8601DateFormatter()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
         var lines = [
-            "NetBar 网络诊断报告",
+            "LinkGlint 网络诊断报告",
             "生成时间：\(formatter.string(from: Date()))",
-            "NetBar 版本：\(version)",
+            "LinkGlint 版本：\(version)",
             "系统：\(ProcessInfo.processInfo.operatingSystemVersionString)",
             ""
         ]
@@ -1251,7 +1252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        mainWindow.title = "NetBar"
+        mainWindow.title = "LinkGlint"
         mainWindow.minSize = NSSize(width: 680, height: 480)
         mainWindow.isReleasedWhenClosed = false
         mainWindow.titlebarAppearsTransparent = true
@@ -1266,12 +1267,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Compact header: current connection first, advanced actions behind icons.
         let headerIcon = NSImageView()
-        headerIcon.image = NSImage(systemSymbolName: "network", accessibilityDescription: "NetBar")
+        headerIcon.image = NSImage(systemSymbolName: "network", accessibilityDescription: "LinkGlint")
         headerIcon.symbolConfiguration = .init(pointSize: 24, weight: .semibold)
         headerIcon.contentTintColor = .systemBlue
         headerIcon.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = NSTextField(labelWithString: "NetBar")
+        let title = NSTextField(labelWithString: "LinkGlint")
         title.font = .systemFont(ofSize: 21, weight: .bold)
         overviewLabel = NSTextField(labelWithString: "正在读取网络状态…")
         overviewLabel.font = .systemFont(ofSize: 12)

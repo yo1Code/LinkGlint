@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// A deliberately small root helper. It accepts only NetBar's fixed network
+/// A deliberately small root helper. It accepts only LinkGlint's fixed network
 /// operations and launches `networksetup` directly—never a shell or an
 /// arbitrary executable. The installed copy is owned by root and invoked with
 /// `sudo -n`, so normal network changes cannot display another password prompt.
@@ -13,7 +13,7 @@ enum HelperFailure: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .usage(let message): return message
-        case .permission: return "NetBarHelper must run as root."
+        case .permission: return "LinkGlintHelper must run as root."
         case .command(let message): return message
         }
     }
@@ -71,7 +71,7 @@ private func run(_ arguments: [String]) throws {
 
     if arguments == ["status"] {
         guard geteuid() == 0 else { throw HelperFailure.permission }
-        print("NetBarHelper ready")
+        print("LinkGlintHelper ready")
         return
     }
     guard geteuid() == 0 else { throw HelperFailure.permission }
@@ -155,6 +155,6 @@ private func run(_ arguments: [String]) throws {
 do {
     try run(Array(CommandLine.arguments.dropFirst()))
 } catch {
-    FileHandle.standardError.write(Data("NetBarHelper: \(error)\n".utf8))
+    FileHandle.standardError.write(Data("LinkGlintHelper: \(error)\n".utf8))
     exit(EXIT_FAILURE)
 }

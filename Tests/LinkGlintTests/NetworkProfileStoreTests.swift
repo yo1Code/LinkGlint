@@ -1,10 +1,10 @@
 import XCTest
-@testable import NetBar
+@testable import LinkGlint
 
 final class NetworkProfileStoreTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: NetworkProfileStore!
-    private let suite = "local.codex.NetBar.tests.profiles"
+    private let suite = "local.codex.LinkGlint.tests.profiles"
 
     override func setUp() {
         super.setUp()

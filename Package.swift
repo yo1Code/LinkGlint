@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "NetBar",
+    name: "LinkGlint",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "NetBar", targets: ["NetBar"]),
-        .executable(name: "NetBarHelper", targets: ["NetBarHelper"])
+        .executable(name: "LinkGlint", targets: ["LinkGlint"]),
+        .executable(name: "LinkGlintHelper", targets: ["LinkGlintHelper"])
     ],
     targets: [
-        .executableTarget(name: "NetBar"),
-        .executableTarget(name: "NetBarHelper"),
-        .testTarget(name: "NetBarTests", dependencies: ["NetBar"])
+        .executableTarget(name: "LinkGlint"),
+        .executableTarget(name: "LinkGlintHelper"),
+        .testTarget(name: "LinkGlintTests", dependencies: ["LinkGlint"])
     ]
 )

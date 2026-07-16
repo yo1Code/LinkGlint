@@ -16,9 +16,13 @@ enum PrivilegedAccessState: Equatable {
 }
 
 final class PrivilegedHelperManager {
-    static let installedHelperPath = "/Library/PrivilegedHelperTools/local.codex.NetBarHelper"
+    static let installedHelperPath = "/Library/PrivilegedHelperTools/io.github.harenagodz.LinkGlintHelper"
     // sudo ignores included-directory entries whose filename contains a dot.
-    static let sudoersPath = "/etc/sudoers.d/local_codex_netbar"
+    static let sudoersPath = "/etc/sudoers.d/io_github_harenagodz_linkglint"
+    // NetBar 3.x used these paths. Keeping them readable preserves the user's
+    // one-time authorization when upgrading to the LinkGlint brand.
+    static let legacyInstalledHelperPath = "/Library/PrivilegedHelperTools/local.codex.NetBarHelper"
+    static let legacySudoersPath = "/etc/sudoers.d/local_codex_netbar"
 
     private let fileManager: FileManager
 
@@ -28,27 +32,24 @@ final class PrivilegedHelperManager {
 
     var bundledHelperURL: URL? {
         let url = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Library/PrivilegedHelperTools/NetBarHelper")
+            .appendingPathComponent("Contents/Library/PrivilegedHelperTools/LinkGlintHelper")
         return fileManager.isExecutableFile(atPath: url.path) ? url : nil
     }
 
     var state: PrivilegedAccessState {
-        let helperExists = fileManager.isExecutableFile(atPath: Self.installedHelperPath)
-        let sudoersExists = fileManager.fileExists(atPath: Self.sudoersPath)
-        guard helperExists || sudoersExists else { return .notConfigured }
-        guard helperExists, sudoersExists, hasSafeOwnership(path: Self.installedHelperPath),
-              hasSafeOwnership(path: Self.sudoersPath) else { return .needsRepair }
-        do {
-            let output = try CommandRunner.run("/usr/bin/sudo", ["-n", Self.installedHelperPath, "status"])
-            return output.contains("NetBarHelper ready") ? .ready : .needsRepair
-        } catch {
-            return .needsRepair
-        }
+        if configuredHelperPath != nil { return .ready }
+        let knownPaths = [
+            Self.installedHelperPath,
+            Self.sudoersPath,
+            Self.legacyInstalledHelperPath,
+            Self.legacySudoersPath
+        ]
+        return knownPaths.contains(where: fileManager.fileExists(atPath:)) ? .needsRepair : .notConfigured
     }
 
     func configureForCurrentUser() throws {
         guard let source = bundledHelperURL else {
-            throw NetworkError.commandFailed("应用包内缺少权限助手，请重新安装完整的 NetBar.app。")
+            throw NetworkError.commandFailed("应用包内缺少权限助手，请重新安装完整的 LinkGlint.app。")
         }
         let username = NSUserName()
         guard username.range(of: #"^[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil else {
@@ -64,7 +65,7 @@ final class PrivilegedHelperManager {
         case "$account" in ''|*[!A-Za-z0-9._-]*) exit 64 ;; esac
         /usr/bin/install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
         /usr/bin/install -o root -g wheel -m 0755 "$source" "$target"
-        temp="$(/usr/bin/mktemp /tmp/netbar-sudoers.XXXXXX)"
+        temp="$(/usr/bin/mktemp /tmp/linkglint-sudoers.XXXXXX)"
         trap '/bin/rm -f "$temp"' EXIT
         /usr/bin/printf '%s ALL=(root) NOPASSWD: %s *\n' "$account" "$target" > "$temp"
         /usr/sbin/chown root:wheel "$temp"
@@ -87,19 +88,44 @@ final class PrivilegedHelperManager {
     func removeConfiguration() throws {
         let script = #"""
         set -eu
-        /bin/rm -f "$1" "$2"
+        /bin/rm -f "$1" "$2" "$3" "$4"
         """#
-        try runAdministratorShell(script: script, arguments: [Self.installedHelperPath, Self.sudoersPath])
+        try runAdministratorShell(
+            script: script,
+            arguments: [
+                Self.installedHelperPath,
+                Self.sudoersPath,
+                Self.legacyInstalledHelperPath,
+                Self.legacySudoersPath
+            ]
+        )
     }
 
     func run(_ arguments: [String]) throws {
-        guard state == .ready else {
+        guard let helperPath = configuredHelperPath else {
             throw NetworkError.privilegedAccessRequired
         }
         // `-n` explicitly forbids sudo from prompting. After one-time setup this
         // succeeds; if the configuration is damaged, the app reports repair is
         // needed instead of unexpectedly asking for another password.
-        _ = try CommandRunner.run("/usr/bin/sudo", ["-n", Self.installedHelperPath] + arguments)
+        _ = try CommandRunner.run("/usr/bin/sudo", ["-n", helperPath] + arguments)
+    }
+
+    private var configuredHelperPath: String? {
+        let configurations = [
+            (Self.installedHelperPath, Self.sudoersPath),
+            (Self.legacyInstalledHelperPath, Self.legacySudoersPath)
+        ]
+        for (helperPath, sudoersPath) in configurations {
+            guard fileManager.isExecutableFile(atPath: helperPath),
+                  fileManager.fileExists(atPath: sudoersPath),
+                  hasSafeOwnership(path: helperPath),
+                  hasSafeOwnership(path: sudoersPath) else { continue }
+            guard let output = try? CommandRunner.run("/usr/bin/sudo", ["-n", helperPath, "status"]),
+                  output.contains("LinkGlintHelper ready") || output.contains("NetBarHelper ready") else { continue }
+            return helperPath
+        }
+        return nil
     }
 
     private func hasSafeOwnership(path: String) -> Bool {
@@ -113,7 +139,7 @@ final class PrivilegedHelperManager {
         let appleScript = """
         on run argv
             set fixedScript to item 1 of argv
-            set commandText to "/bin/sh -c " & quoted form of fixedScript & " netbar-installer"
+            set commandText to "/bin/sh -c " & quoted form of fixedScript & " linkglint-installer"
             repeat with argumentIndex from 2 to count of argv
                 set commandText to commandText & " " & quoted form of item argumentIndex of argv
             end repeat

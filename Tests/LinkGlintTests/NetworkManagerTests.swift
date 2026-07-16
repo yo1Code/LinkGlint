@@ -1,5 +1,5 @@
 import XCTest
-@testable import NetBar
+@testable import LinkGlint
 
 final class NetworkManagerTests: XCTestCase {
     func testParsesEnabledAndDisabledServices() {

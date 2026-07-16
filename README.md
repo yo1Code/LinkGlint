@@ -1,18 +1,25 @@
-# NetBar
+<p align="center">
+  <img src="docs/images/linkglint-logo.png" width="148" height="148" alt="LinkGlint 软件 Logo">
+</p>
 
-![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111111?logo=apple)
-![Swift 5.10](https://img.shields.io/badge/Swift-5.10-F05138?logo=swift&logoColor=white)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<h1 align="center">LinkGlint</h1>
 
-一个原生 macOS 网络管理工具。它会读取系统中的 Wi‑Fi、有线网络、VPN
-以及其他网络服务，并允许从主窗口或菜单栏启用、停用及切换指定服务；Wi‑Fi
-还可单独开关硬件。
+<p align="center"><strong>让每一条网络连接，都在菜单栏清晰闪现。</strong></p>
 
-![NetBar 3.1.0 简约主界面](docs/images/netbar-3.1.0.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-13%2B-111111?logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/Swift-5.10-F05138?logo=swift&logoColor=white" alt="Swift 5.10">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
+</p>
+
+**LinkGlint** 取自 *Link*（连接）与 *Glint*（微光）：它是一款原生 macOS
+网络管理工具，让 Wi‑Fi、有线网络、VPN 与其他网络服务的状态和切换入口始终清晰可见。
+
+![LinkGlint 3.2.0 简约主界面](docs/images/linkglint-3.2.0.png)
 
 ## 下载
 
-预编译的 Intel 与 Apple Silicon 通用版本见 [GitHub Releases](https://github.com/HarenaGodz/NetBar/releases)。
+预编译的 Intel 与 Apple Silicon 通用版本见 [GitHub Releases](https://github.com/HarenaGodz/LinkGlint/releases)。
 
 ## 功能
 
@@ -52,10 +59,10 @@
 ```bash
 chmod +x build_app.sh
 ./build_app.sh
-open dist/NetBar.app
+open dist/LinkGlint.app
 ```
 
-构建后的应用位于 `dist/NetBar.app`，默认同时支持 Apple Silicon 与 Intel Mac。
+构建后的应用位于 `dist/LinkGlint.app`，默认同时支持 Apple Silicon 与 Intel Mac。
 若只构建当前架构，可运行：
 
 ```bash
@@ -72,23 +79,26 @@ ARCHS="$(uname -m)" ./build_app.sh
 关闭窗口时 Dock 图标会自动隐藏，但菜单栏状态、定时刷新和网络切换会继续运行；
 重新打开应用或选择“显示主窗口”即可恢复窗口。
 若正在使用菜单栏整理工具而暂时看不到状态，请先展开隐藏区域，再按住 `⌘`
-将 NetBar 拖到分隔符右侧的常驻区域；主窗口和偏好设置中也保留了这条提示。
+将 LinkGlint 拖到分隔符右侧的常驻区域；主窗口和偏好设置中也保留了这条提示。
 
 ## 开机启动
 
 从菜单栏或偏好设置打开“登录时启动”即可使用 macOS 原生登录项。若系统显示“需要批准”，
-按应用提示在“系统设置 → 通用 → 登录项”中允许 NetBar。此设置不要求管理员密码。
+按应用提示在“系统设置 → 通用 → 登录项”中允许 LinkGlint。此设置不要求管理员密码。
 
 ## 首次权限配置
 
-点击主窗口的“首次配置…”并完成一次 macOS 管理员授权。NetBar 会将一个受限助手
-安装到 `/Library/PrivilegedHelperTools/local.codex.NetBarHelper`，并为当前用户创建
+点击主窗口的“首次配置…”并完成一次 macOS 管理员授权。LinkGlint 会将一个受限助手
+安装到 `/Library/PrivilegedHelperTools/io.github.harenagodz.LinkGlintHelper`，并为当前用户创建
 仅限该助手的 `sudo -n` 规则。之后启用/停用适配器、Wi‑Fi 电源、DNS、优先级、
 配置方案和一键切换均不会再次弹出密码窗口。
 
 助手由 `root:wheel` 持有且不可由普通用户写入；它只接受固定的网络操作，直接启动
 `/usr/sbin/networksetup`，不接收任意程序路径或 Shell 命令。可随时从偏好设置移除，
 移除动作会再次请求一次管理员授权。
+
+从 NetBar 3.x 升级时，LinkGlint 会继续识别旧版受限助手和已有授权，无需仅因更名而
+重新输入管理员密码；重新配置时则会使用新的 LinkGlint 助手路径。
 
 ## 实现说明
 
@@ -102,5 +112,5 @@ ARCHS="$(uname -m)" ./build_app.sh
 
 ## 许可证
 
-NetBar 使用宽松的 [MIT License](LICENSE)。你可以使用、复制、修改、分发及用于
+LinkGlint 使用宽松的 [MIT License](LICENSE)。你可以使用、复制、修改、分发及用于
 商业项目，但需要在副本或软件的主要部分中保留版权和许可证声明。
