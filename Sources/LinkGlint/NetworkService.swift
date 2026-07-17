@@ -50,6 +50,45 @@ struct InterfaceCounters: Equatable {
     let sentBytes: UInt64
 }
 
+struct TrafficSampleResult: Equatable {
+    let receivedBytes: UInt64
+    let sentBytes: UInt64
+    let deltasByDevice: [String: InterfaceCounters]
+}
+
+enum TrafficSampleCalculator {
+    static func calculate(
+        previous: [String: InterfaceCounters],
+        current: [String: InterfaceCounters],
+        services: [NetworkService]
+    ) -> TrafficSampleResult {
+        var deltas: [String: InterfaceCounters] = [:]
+        for (device, counters) in current {
+            guard let old = previous[device] else { continue }
+            deltas[device] = InterfaceCounters(
+                receivedBytes: counters.receivedBytes >= old.receivedBytes
+                    ? counters.receivedBytes - old.receivedBytes : 0,
+                sentBytes: counters.sentBytes >= old.sentBytes
+                    ? counters.sentBytes - old.sentBytes : 0
+            )
+        }
+
+        // A packet can appear on both a VPN and its underlying Wi-Fi/Ethernet
+        // interface. Summing every connected service therefore double-counts
+        // traffic. The default-route device is the authoritative menu-bar rate.
+        let measuredDevice = services.first(where: { $0.connected && $0.isPrimary })?.device
+            ?? services.first(where: { $0.connected && $0.kind != .vpn })?.device
+            ?? services.first(where: \.connected)?.device
+        let measured = measuredDevice.flatMap { deltas[$0] }
+            ?? InterfaceCounters(receivedBytes: 0, sentBytes: 0)
+        return TrafficSampleResult(
+            receivedBytes: measured.receivedBytes,
+            sentBytes: measured.sentBytes,
+            deltasByDevice: deltas
+        )
+    }
+}
+
 struct NetworkDiagnostic {
     let date: Date
     let defaultInterface: String?
@@ -262,6 +301,13 @@ final class NetworkManager {
             throw NetworkError.commandFailed("网络服务顺序不完整，请先刷新后重试。")
         }
         try privilegedHelper.run(["order"] + newOrder)
+    }
+
+    func setServiceOrder(_ order: [String]) throws {
+        guard !order.isEmpty, Set(order).count == order.count else {
+            throw NetworkError.commandFailed("网络服务顺序无效，请刷新后重试。")
+        }
+        try privilegedHelper.run(["order"] + order)
     }
 
     /// Enables the chosen physical service first, then disables the other active

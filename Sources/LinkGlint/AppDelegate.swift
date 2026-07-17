@@ -2,7 +2,7 @@ import AppKit
 import Network
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     private let manager = NetworkManager()
     private let profileStore = NetworkProfileStore()
     private let usageTracker = UsageTracker()
@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusPopover.behavior = .transient
         statusPopover.animates = true
+        statusPopover.delegate = self
 
         createMainWindow()
         showLoadingMenu()
@@ -389,6 +390,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         profilesItem.submenu = profilesMenu
         menu.addItem(profilesItem)
+
+        if lastServices.count > 1 {
+            let priority = NSMenuItem(title: "调整服务优先级…", action: #selector(showPriorityEditor), keyEquivalent: "")
+            priority.target = self
+            priority.image = NSImage(systemSymbolName: "arrow.up.arrow.down", accessibilityDescription: nil)
+            menu.addItem(priority)
+        }
 
         let today = usageTracker.usage()
         let usageItem = NSMenuItem(
@@ -716,6 +724,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         usageRow.alignment = .centerY
 
         var views: [NSView] = [statusPanelProfileButton()]
+        if services.count > 1 {
+            let priority = compactIconButton(symbol: "arrow.up.arrow.down", label: "调整服务优先级", action: #selector(showPriorityEditor))
+            views.append(priority)
+        }
         if let wifiDevice = services.first(where: { $0.kind == .wifi })?.device {
             let join = NetworkActionButton(title: "连接其他 Wi‑Fi…", target: self, action: #selector(showJoinWiFi(_:)))
             join.bezelStyle = .rounded
@@ -888,26 +900,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let counters else { return }
                 if let previousDate = self.previousTrafficSampleDate {
                     let interval = max(sampleDate.timeIntervalSince(previousDate), 0.1)
-                    let activeDevices = Set(self.lastServices.filter(\.connected).compactMap(\.device))
-                    var totalReceived: UInt64 = 0
-                    var totalSent: UInt64 = 0
-                    for (device, current) in counters {
-                        guard let previous = self.previousTrafficCounters[device] else { continue }
-                        let received = current.receivedBytes >= previous.receivedBytes
-                            ? current.receivedBytes - previous.receivedBytes : 0
-                        let sent = current.sentBytes >= previous.sentBytes
-                            ? current.sentBytes - previous.sentBytes : 0
-                        if activeDevices.contains(device) {
-                            totalReceived &+= received
-                            totalSent &+= sent
-                        }
+                    let sample = TrafficSampleCalculator.calculate(
+                        previous: self.previousTrafficCounters,
+                        current: counters,
+                        services: self.lastServices
+                    )
+                    for (device, delta) in sample.deltasByDevice {
                         if self.mainWindow?.isVisible == true, let label = self.trafficLabels[device] {
-                            label.stringValue = "↓ \(self.formatRate(Double(received) / interval))   ↑ \(self.formatRate(Double(sent) / interval))"
+                            label.stringValue = "↓ \(self.formatRate(Double(delta.receivedBytes) / interval))   ↑ \(self.formatRate(Double(delta.sentBytes) / interval))"
                         }
                     }
-                    self.usageTracker.record(receivedBytes: totalReceived, sentBytes: totalSent, at: sampleDate)
-                    self.currentDownloadBytesPerSecond = Double(totalReceived) / interval
-                    self.currentUploadBytesPerSecond = Double(totalSent) / interval
+                    self.usageTracker.record(
+                        receivedBytes: sample.receivedBytes,
+                        sentBytes: sample.sentBytes,
+                        at: sampleDate
+                    )
+                    self.currentDownloadBytesPerSecond = Double(sample.receivedBytes) / interval
+                    self.currentUploadBytesPerSecond = Double(sample.sentBytes) / interval
                     self.updateUsageDisplay()
                     self.applyMenuBarAppearance()
                 }
@@ -918,13 +927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func formatRate(_ bytesPerSecond: Double) -> String {
-        if bytesPerSecond >= 1_000_000 {
-            return String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
-        }
-        if bytesPerSecond >= 1_000 {
-            return String(format: "%.1f KB/s", bytesPerSecond / 1_000)
-        }
-        return String(format: "%.0f B/s", bytesPerSecond)
+        TrafficRateFormatter.string(bytesPerSecond: bytesPerSecond, usesBits: false)
     }
 
     private func scheduleTrafficTimer() {
@@ -944,6 +947,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func applyMenuBarAppearance() {
         guard let button = statusItem?.button else { return }
+        // Keep the popover anchor perfectly still while the user interacts with
+        // it. The latest rate is painted immediately after the panel closes.
+        guard !statusPopover.isShown else { return }
         let showsText = preferences.showMenuBarTitle || preferences.showMenuBarSpeed
         let networkPresentation = NetworkStatusPresentation.make(services: lastServices, hasLoaded: hasLoadedNetworkState)
         let presentation = MenuBarTrafficPresentation.make(
@@ -968,16 +974,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.imageScaling = .scaleNone
             statusItem.length = ceil(button.image?.size.width ?? NSStatusItem.squareLength) + 8
         } else {
-            button.attributedTitle = NSAttributedString(string: presentation.text, attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-            ])
+            let title = menuBarAttributedTitle(presentation.text)
+            button.attributedTitle = title
             button.image = menuBarImage(
                 symbolName: networkPresentation.symbolName,
                 accessibilityDescription: networkPresentation.title
             )
             button.imagePosition = showsText ? .imageLeading : .imageOnly
             button.imageScaling = .scaleProportionallyDown
-            statusItem.length = showsText ? NSStatusItem.variableLength : NSStatusItem.squareLength
+            if showsText {
+                statusItem.length = NSStatusItem.variableLength
+            } else {
+                statusItem.length = NSStatusItem.squareLength
+            }
         }
         button.setAccessibilityLabel("LinkGlint · \(menuBarStatusTitle) · 下载 \(formatRate(currentDownloadBytesPerSecond)) · 上传 \(formatRate(currentUploadBytesPerSecond))")
     }
@@ -986,8 +995,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let lines = text.components(separatedBy: "\n")
         guard lines.count == 2 else { return menuBarImage(symbolName: symbolName, accessibilityDescription: text) }
 
-        let topFont = NSFont.systemFont(ofSize: 8.5, weight: .semibold)
-        let bottomFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
+        let topFont = NSFont.systemFont(ofSize: 9.5, weight: .semibold)
+        let bottomFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
         let topAttributes: [NSAttributedString.Key: Any] = [.font: topFont, .foregroundColor: NSColor.black]
         let bottomAttributes: [NSAttributedString.Key: Any] = [.font: bottomFont, .foregroundColor: NSColor.black]
         let topWidth = ceil((lines[0] as NSString).size(withAttributes: topAttributes).width)
@@ -995,7 +1004,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let iconSize: CGFloat = 15
         let spacing: CGFloat = 4
         let textWidth = max(topWidth, bottomWidth)
-        let imageSize = NSSize(width: iconSize + spacing + textWidth, height: 18)
+        let imageSize = NSSize(width: iconSize + spacing + textWidth, height: 20)
 
         let image = NSImage(size: imageSize, flipped: false) { rect in
             NSColor.black.set()
@@ -1012,11 +1021,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let textX = iconSize + spacing
             (lines[0] as NSString).draw(
-                in: NSRect(x: textX, y: 8.7, width: textWidth, height: 9.3),
+                in: NSRect(x: textX, y: 9.7, width: textWidth, height: 10.3),
                 withAttributes: topAttributes
             )
             (lines[1] as NSString).draw(
-                in: NSRect(x: textX, y: -0.2, width: textWidth, height: 9.2),
+                in: NSRect(x: textX, y: -0.1, width: textWidth, height: 10.2),
                 withAttributes: bottomAttributes
             )
             return true
@@ -1024,6 +1033,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         image.isTemplate = true
         image.accessibilityDescription = text.replacingOccurrences(of: "\n", with: "，")
         return image
+    }
+
+    private func menuBarAttributedTitle(_ text: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium)
+        ])
+        let speedFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+        let expression = try? NSRegularExpression(pattern: "[↓↑][^↓↑]+")
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        expression?.enumerateMatches(in: text, range: range) { match, _, _ in
+            guard let match else { return }
+            result.addAttribute(.font, value: speedFont, range: match.range)
+        }
+        return result
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        lastMenuBarRenderKey = nil
+        applyMenuBarAppearance()
     }
 
     private func menuBarImage(symbolName: String, accessibilityDescription: String) -> NSImage? {
@@ -1176,6 +1204,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setHighestPriority(service: String, currentOrder: [String]) {
         performPrivilegedChange(description: "提高优先级：\(service)") { [manager] in
             try manager.setHighestPriority(service: service, currentOrder: currentOrder)
+        }
+    }
+
+    @objc private func showPriorityEditor() {
+        guard lastServices.count > 1 else {
+            showError(NetworkError.commandFailed("至少需要两个网络服务才能调整优先级。"))
+            return
+        }
+        let currentOrder = lastServices.sorted { $0.orderIndex < $1.orderIndex }.map(\.name)
+        let editor = PriorityOrderEditorController(services: lastServices)
+        _ = editor.view
+
+        let alert = NSAlert()
+        alert.messageText = "调整网络服务优先级"
+        alert.informativeText = "macOS 会优先尝试列表靠前的服务。拖动完成后点击“应用顺序”。"
+        alert.addButton(withTitle: "应用顺序")
+        alert.addButton(withTitle: "取消")
+        alert.accessoryView = editor.view
+        statusPopover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let newOrder = editor.orderedServiceNames
+        guard newOrder != currentOrder else { return }
+        performPrivilegedChange(description: "更新网络服务优先级") { [manager] in
+            try manager.setServiceOrder(newOrder)
         }
     }
 
@@ -2217,6 +2271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(.separator())
         addToolItem(menu, title: "保存当前方案…", symbol: "plus.square", action: #selector(saveCurrentProfile))
         addToolItem(menu, title: "删除所选自定义方案…", symbol: "trash", action: #selector(deleteSelectedProfile))
+        addToolItem(menu, title: "调整服务优先级…", symbol: "arrow.up.arrow.down", action: #selector(showPriorityEditor))
         menu.addItem(.separator())
         addToolItem(menu, title: "用量历史…", symbol: "chart.bar", action: #selector(showUsageHistory))
         addToolItem(menu, title: "重置今日用量…", symbol: "arrow.counterclockwise", action: #selector(resetTodayUsage))

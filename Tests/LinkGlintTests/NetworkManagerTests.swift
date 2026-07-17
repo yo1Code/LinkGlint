@@ -115,3 +115,73 @@ final class NetworkManagerTests: XCTestCase {
         XCTAssertThrowsError(try NetworkManager().normalizedDNSServers("dns.example.com"))
     }
 }
+
+final class TrafficSampleCalculatorTests: XCTestCase {
+    func testUsesDefaultRouteOnlyAndDoesNotDoubleCountVPN() {
+        let previous = [
+            "en0": InterfaceCounters(receivedBytes: 1_000, sentBytes: 2_000),
+            "utun4": InterfaceCounters(receivedBytes: 5_000, sentBytes: 8_000)
+        ]
+        let current = [
+            "en0": InterfaceCounters(receivedBytes: 1_600, sentBytes: 2_200),
+            "utun4": InterfaceCounters(receivedBytes: 5_500, sentBytes: 8_150)
+        ]
+        let result = TrafficSampleCalculator.calculate(
+            previous: previous,
+            current: current,
+            services: [
+                service(name: "Wi-Fi", device: "en0", primary: true, kind: .wifi),
+                service(name: "VPN", device: "utun4", primary: false, kind: .vpn)
+            ]
+        )
+
+        XCTAssertEqual(result.receivedBytes, 600)
+        XCTAssertEqual(result.sentBytes, 200)
+        XCTAssertEqual(result.deltasByDevice["utun4"], InterfaceCounters(receivedBytes: 500, sentBytes: 150))
+    }
+
+    func testFallsBackToConnectedPhysicalService() {
+        let result = TrafficSampleCalculator.calculate(
+            previous: ["en7": .init(receivedBytes: 100, sentBytes: 200)],
+            current: ["en7": .init(receivedBytes: 140, sentBytes: 230)],
+            services: [service(name: "USB LAN", device: "en7", primary: false, kind: .ethernet)]
+        )
+        XCTAssertEqual(result.receivedBytes, 40)
+        XCTAssertEqual(result.sentBytes, 30)
+    }
+
+    func testCounterResetDoesNotCreateAnArtificialSpike() {
+        let result = TrafficSampleCalculator.calculate(
+            previous: ["en0": .init(receivedBytes: 9_000, sentBytes: 8_000)],
+            current: ["en0": .init(receivedBytes: 20, sentBytes: 30)],
+            services: [service(name: "Wi-Fi", device: "en0", primary: true, kind: .wifi)]
+        )
+        XCTAssertEqual(result.receivedBytes, 0)
+        XCTAssertEqual(result.sentBytes, 0)
+    }
+
+    private func service(
+        name: String,
+        device: String,
+        primary: Bool,
+        kind: NetworkService.Kind
+    ) -> NetworkService {
+        NetworkService(
+            name: name,
+            orderIndex: 0,
+            hardwarePort: nil,
+            device: device,
+            enabled: true,
+            connected: true,
+            ipAddress: "192.0.2.2",
+            subnetMask: nil,
+            router: nil,
+            dnsServers: [],
+            macAddress: nil,
+            ssid: nil,
+            isPrimary: primary,
+            kind: kind,
+            wifiPowered: kind == .wifi ? true : nil
+        )
+    }
+}

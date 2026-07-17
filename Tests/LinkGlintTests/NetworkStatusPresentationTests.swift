@@ -13,7 +13,7 @@ final class NetworkStatusPresentationTests: XCTestCase {
                 usesTwoLines: false,
                 usesBits: false
             ),
-            .init(text: "无线·Office  ↓1.2MB/s ↑42KB/s", usesTwoLines: false)
+            .init(text: "无线·Office  ↓1.2 MB/s ↑42 KB/s", usesTwoLines: false)
         )
         XCTAssertEqual(
             MenuBarTrafficPresentation.make(
@@ -25,7 +25,7 @@ final class NetworkStatusPresentationTests: XCTestCase {
                 usesTwoLines: true,
                 usesBits: true
             ),
-            .init(text: "无线·Office\n↓10.0Mb/s  ↑336Kb/s", usesTwoLines: true)
+            .init(text: "无线·Office\n↓10 Mbps  ↑336 Kbps", usesTwoLines: true)
         )
     }
 
@@ -40,7 +40,7 @@ final class NetworkStatusPresentationTests: XCTestCase {
                 usesTwoLines: true,
                 usesBits: false
             ),
-            .init(text: "↓0B/s\n↑0B/s", usesTwoLines: true)
+            .init(text: "↓0 B/s\n↑0 B/s", usesTwoLines: true)
         )
         XCTAssertEqual(
             MenuBarTrafficPresentation.make(
@@ -54,6 +54,16 @@ final class NetworkStatusPresentationTests: XCTestCase {
             ),
             .init(text: "有线·LAN", usesTwoLines: false)
         )
+    }
+
+    func testTrafficRateUsesStandardReadableUnits() {
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 0, usesBits: false), "0 B/s")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 999, usesBits: false), "999 B/s")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 1_250, usesBits: false), "1.2 KB/s")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 42_000, usesBits: false), "42 KB/s")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 1_250_000, usesBits: false), "1.2 MB/s")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 1_250_000, usesBits: true), "10 Mbps")
+        XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: .infinity, usesBits: true), "0 bps")
     }
 
     func testLoadingAndOfflinePresentations() {
