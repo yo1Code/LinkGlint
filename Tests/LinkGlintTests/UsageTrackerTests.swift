@@ -60,10 +60,22 @@ final class UsageTrackerTests: XCTestCase {
     func testPreferencesHaveExpectedDefaultsAndPersist() {
         let preferences = AppPreferences(defaults: defaults)
         XCTAssertTrue(preferences.showMenuBarTitle)
+        XCTAssertTrue(preferences.showMenuBarSpeed)
+        XCTAssertFalse(preferences.menuBarSpeedTwoLines)
+        XCTAssertFalse(preferences.menuBarSpeedInBits)
+        XCTAssertEqual(preferences.trafficRefreshInterval, 2)
         XCTAssertTrue(preferences.openWindowAtLaunch)
         XCTAssertFalse(preferences.autoRunDiagnostics)
         preferences.showMenuBarTitle = false
+        preferences.showMenuBarSpeed = false
+        preferences.menuBarSpeedTwoLines = true
+        preferences.menuBarSpeedInBits = true
+        preferences.trafficRefreshInterval = 5
         XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarTitle)
+        XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarSpeed)
+        XCTAssertTrue(AppPreferences(defaults: defaults).menuBarSpeedTwoLines)
+        XCTAssertTrue(AppPreferences(defaults: defaults).menuBarSpeedInBits)
+        XCTAssertEqual(AppPreferences(defaults: defaults).trafficRefreshInterval, 5)
     }
 
     private func makeDate(_ year: Int, _ month: Int, _ day: Int) -> Date {

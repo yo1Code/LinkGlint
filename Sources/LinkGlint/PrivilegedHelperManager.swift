@@ -122,7 +122,7 @@ final class PrivilegedHelperManager {
                   hasSafeOwnership(path: helperPath),
                   hasSafeOwnership(path: sudoersPath) else { continue }
             guard let output = try? CommandRunner.run("/usr/bin/sudo", ["-n", helperPath, "status"]),
-                  output.contains("LinkGlintHelper ready") || output.contains("NetBarHelper ready") else { continue }
+                  output.contains("LinkGlintHelper ready 2") else { continue }
             return helperPath
         }
         return nil

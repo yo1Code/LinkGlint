@@ -32,6 +32,24 @@ final class NetworkManagerTests: XCTestCase {
         XCTAssertEqual(result["Thunderbolt Bridge"]?.device, "bridge0")
     }
 
+    func testParsesNetworkServicePriorityOrder() {
+        let input = """
+        An asterisk (*) denotes that a network service is disabled.
+        (1) USB Ethernet
+        (Hardware Port: USB Ethernet, Device: en7)
+
+        (2) Wi-Fi
+        (Hardware Port: Wi-Fi, Device: en0)
+
+        (*) Thunderbolt Bridge
+        (Hardware Port: Thunderbolt Bridge, Device: bridge0)
+        """
+        XCTAssertEqual(
+            NetworkManager().parseServiceOrder(input),
+            ["USB Ethernet", "Wi-Fi", "Thunderbolt Bridge"]
+        )
+    }
+
     func testParsesIndentedRouteValue() {
         let input = """
            route to: default

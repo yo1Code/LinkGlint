@@ -81,6 +81,10 @@ struct AppPreferences {
         self.defaults = defaults
         defaults.register(defaults: [
             "showMenuBarTitle": true,
+            "showMenuBarSpeed": true,
+            "menuBarSpeedTwoLines": false,
+            "menuBarSpeedInBits": false,
+            "trafficRefreshInterval": 2.0,
             "openWindowAtLaunch": true,
             "autoRunDiagnostics": false
         ])
@@ -89,6 +93,29 @@ struct AppPreferences {
     var showMenuBarTitle: Bool {
         get { defaults.bool(forKey: "showMenuBarTitle") }
         nonmutating set { defaults.set(newValue, forKey: "showMenuBarTitle") }
+    }
+
+    var showMenuBarSpeed: Bool {
+        get { defaults.bool(forKey: "showMenuBarSpeed") }
+        nonmutating set { defaults.set(newValue, forKey: "showMenuBarSpeed") }
+    }
+
+    var menuBarSpeedTwoLines: Bool {
+        get { defaults.bool(forKey: "menuBarSpeedTwoLines") }
+        nonmutating set { defaults.set(newValue, forKey: "menuBarSpeedTwoLines") }
+    }
+
+    var menuBarSpeedInBits: Bool {
+        get { defaults.bool(forKey: "menuBarSpeedInBits") }
+        nonmutating set { defaults.set(newValue, forKey: "menuBarSpeedInBits") }
+    }
+
+    var trafficRefreshInterval: TimeInterval {
+        get {
+            let value = defaults.double(forKey: "trafficRefreshInterval")
+            return [1.0, 2.0, 5.0].contains(value) ? value : 2.0
+        }
+        nonmutating set { defaults.set(newValue, forKey: "trafficRefreshInterval") }
     }
 
     var openWindowAtLaunch: Bool {

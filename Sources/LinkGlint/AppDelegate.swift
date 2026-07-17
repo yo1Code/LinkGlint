@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let usageTracker = UsageTracker()
     private var preferences = AppPreferences()
     private var statusItem: NSStatusItem!
+    private let statusPopover = NSPopover()
+    private var statusContextMenu: NSMenu?
     private var mainWindow: NSWindow!
     private var preferencesWindow: NSWindow?
     private var servicesStack: NSStackView!
@@ -17,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var deleteProfileButton: NSButton!
     private var usageLabel: NSTextField!
     private var loginItemCheckbox: NSButton!
+    private var loginItemStatusLabel: NSTextField?
     private var accessBanner: NSBox!
     private var accessStatusLabel: NSTextField!
     private var accessDetailLabel: NSTextField!
@@ -38,11 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastDiagnostic: NetworkDiagnostic?
     private var previousTrafficCounters: [String: InterfaceCounters] = [:]
     private var previousTrafficSampleDate: Date?
+    private var currentDownloadBytesPerSecond: Double = 0
+    private var currentUploadBytesPerSecond: Double = 0
     private var trafficLabels: [String: NSTextField] = [:]
     private var lastAutoDiagnosticAt: Date?
     private var hasLoadedNetworkState = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        createApplicationMenu()
         // Start as a menu-bar app. Showing a management window temporarily restores
         // the regular policy; closing the last window removes the Dock icon again.
         NSApp.setActivationPolicy(.accessory)
@@ -51,11 +57,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Preserve the status-item placement chosen by users of NetBar 3.x.
         statusItem.autosaveName = "local.codex.NetBar.network-status"
         statusItem.isVisible = true
-        statusItem.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "网络管理")
+        statusItem.button?.image = menuBarImage(symbolName: "network", accessibilityDescription: "网络管理")
         // Keep a text label visible as well. This avoids an apparently "missing"
         // app when a system symbol is unavailable or hard to spot among many items.
         applyMenuBarAppearance()
         statusItem.button?.toolTip = "LinkGlint 网络管理"
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(toggleStatusPanel(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusPopover.behavior = .transient
+        statusPopover.animates = true
 
         createMainWindow()
         showLoadingMenu()
@@ -66,9 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
             self?.refresh()
         }
-        trafficTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.sampleTraffic()
-        }
+        scheduleTrafficTimer()
         pathMonitor.pathUpdateHandler = { [weak self] _ in
             DispatchQueue.main.async {
                 self?.schedulePathRefresh()
@@ -92,6 +101,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    private func createApplicationMenu() {
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu(title: "LinkGlint")
+        appMenuItem.submenu = appMenu
+
+        let about = NSMenuItem(title: "关于 LinkGlint", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
+        let preferencesItem = NSMenuItem(title: "偏好设置…", action: #selector(showPreferences), keyEquivalent: ",")
+        preferencesItem.target = self
+        appMenu.addItem(preferencesItem)
+        appMenu.addItem(.separator())
+        let hide = NSMenuItem(title: "隐藏 LinkGlint", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(hide)
+        let hideOthers = NSMenuItem(title: "隐藏其他", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "退出 LinkGlint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        NSApp.mainMenu = mainMenu
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -130,7 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(loading)
         menu.addItem(.separator())
         addFooter(to: menu)
-        statusItem.menu = menu
+        statusContextMenu = menu
+        rebuildStatusPanel(with: [])
     }
 
     @objc private func refresh() {
@@ -185,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(.separator())
         addFooter(to: menu)
-        statusItem.menu = menu
+        statusContextMenu = menu
+        rebuildStatusPanel(with: services)
         updateStatusIcon(services)
     }
 
@@ -234,6 +270,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         copyInfo.target = self
         copyInfo.representedObject = service.copyableDetails
         submenu.addItem(copyInfo)
+
+        let rename = NSMenuItem(title: "重命名网络服务…", action: #selector(renameNetworkService(_:)), keyEquivalent: "")
+        rename.target = self
+        rename.representedObject = service.name
+        submenu.addItem(rename)
 
         if let ip = service.ipAddress {
             let copyIP = NSMenuItem(title: "复制 IP 地址", action: #selector(copyMenuValue(_:)), keyEquivalent: "")
@@ -385,9 +426,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(accessItem)
 
         let loginItem = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLoginMenu(_:)), keyEquivalent: "")
+        loginItem.identifier = NSUserInterfaceItemIdentifier("launch-at-login")
         loginItem.target = self
         loginItem.state = loginItemState
         menu.addItem(loginItem)
+
+        let aboutItem = NSMenuItem(title: "关于 LinkGlint", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
 
         let preferencesItem = NSMenuItem(title: "LinkGlint 偏好设置…", action: #selector(showPreferences), keyEquivalent: "")
         preferencesItem.target = self
@@ -402,7 +448,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let active = services.first(where: { $0.isPrimary && $0.connected })
             ?? services.first(where: \.connected)
         let presentation = NetworkStatusPresentation.make(services: services, hasLoaded: hasLoadedNetworkState)
-        statusItem.button?.image = NSImage(systemSymbolName: presentation.symbolName, accessibilityDescription: "网络状态")
+        statusItem.button?.image = menuBarImage(
+            symbolName: presentation.symbolName,
+            accessibilityDescription: presentation.title
+        )
         applyMenuBarAppearance()
         statusItem.button?.toolTip = active.map {
             var text = "LinkGlint · 已连接 · \($0.name)"
@@ -410,6 +459,387 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let ip = $0.ipAddress { text += " · \(ip)" }
             return text
         } ?? "LinkGlint · 离线 · 当前无网络连接"
+    }
+
+    @objc private func toggleStatusPanel(_ sender: Any?) {
+        guard let button = statusItem.button else { return }
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            statusPopover.close()
+            statusContextMenu?.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: button.bounds.height + 3),
+                in: button
+            )
+            return
+        }
+        if statusPopover.isShown {
+            statusPopover.performClose(sender)
+        } else {
+            rebuildStatusPanel(with: lastServices)
+            statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    private func rebuildStatusPanel(with services: [NetworkService]) {
+        let width: CGFloat = 404
+        let visibleRows = min(max(services.count, 1), 5)
+        let rowViewportHeight = CGFloat(visibleRows * 56 + max(visibleRows - 1, 0) * 6)
+        let permissionHeight: CGFloat = manager.privilegedAccessState == .ready ? 0 : 34
+        let height: CGFloat = 220 + permissionHeight + rowViewportHeight
+        let controller = NSViewController()
+        // NSPopover already supplies the window shape and shadow. A second
+        // vibrancy layer here used to blend strongly with colorful wallpapers,
+        // making the panel look tinted or uneven. Use an opaque dynamic system
+        // background instead so text and controls remain consistent everywhere.
+        let root = StatusPanelBackgroundView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        controller.view = root
+
+        let active = services.first(where: { $0.isPrimary && $0.connected })
+            ?? services.first(where: \.connected)
+        let presentation = NetworkStatusPresentation.make(services: services, hasLoaded: hasLoadedNetworkState)
+        let headerIcon = NSImageView()
+        headerIcon.image = NSImage(systemSymbolName: presentation.symbolName, accessibilityDescription: presentation.title)
+        headerIcon.symbolConfiguration = .init(pointSize: 24, weight: .semibold)
+        headerIcon.contentTintColor = active == nil ? .secondaryLabelColor : statusColor(for: active!.kind)
+        headerIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        let headline = NSTextField(labelWithString: panelNetworkName(active))
+        headline.font = .systemFont(ofSize: 17, weight: .semibold)
+        headline.lineBreakMode = .byTruncatingTail
+        let subheadline = NSTextField(labelWithString: panelNetworkDetail(active, presentation: presentation))
+        subheadline.font = .systemFont(ofSize: 11)
+        subheadline.textColor = .secondaryLabelColor
+        subheadline.lineBreakMode = .byTruncatingTail
+        let headingText = NSStackView(views: [headline, subheadline])
+        headingText.orientation = .vertical
+        headingText.alignment = .leading
+        headingText.spacing = 2
+        headingText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let headingSpacer = NSView()
+        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let currentBadge = statusPanelBadge(active == nil ? "离线" : "当前", color: active == nil ? .systemGray : .systemGreen)
+        let refreshButton = compactIconButton(symbol: "arrow.clockwise", label: "刷新", action: #selector(refresh))
+        let header = NSStackView(views: [headerIcon, headingText, headingSpacer, currentBadge, refreshButton])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let hero = NSBox()
+        hero.boxType = .custom
+        hero.cornerRadius = 13
+        hero.borderWidth = 1
+        let heroColor = active.map { statusColor(for: $0.kind) } ?? .systemGray
+        hero.borderColor = heroColor.withAlphaComponent(0.24)
+        hero.fillColor = heroColor.withAlphaComponent(0.075)
+        hero.contentView?.addSubview(header)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: hero.contentView!.topAnchor, constant: 11),
+            header.bottomAnchor.constraint(equalTo: hero.contentView!.bottomAnchor, constant: -11),
+            header.leadingAnchor.constraint(equalTo: hero.contentView!.leadingAnchor, constant: 12),
+            header.trailingAnchor.constraint(equalTo: hero.contentView!.trailingAnchor, constant: -9)
+        ])
+
+        let sectionLabel = NSTextField(labelWithString: "网络服务")
+        sectionLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        sectionLabel.textColor = .secondaryLabelColor
+        let sectionCount = NSTextField(labelWithString: "\(services.filter(\.connected).count) 个已连接 · \(services.filter(\.enabled).count) 个已启用")
+        sectionCount.font = .systemFont(ofSize: 9.5)
+        sectionCount.textColor = .tertiaryLabelColor
+        sectionCount.alignment = .right
+        let sectionSpacer = NSView()
+        sectionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let sectionHeader = NSStackView(views: [sectionLabel, sectionSpacer, sectionCount])
+        sectionHeader.orientation = .horizontal
+        sectionHeader.alignment = .centerY
+
+        let rows = NSStackView()
+        rows.orientation = .vertical
+        rows.alignment = .width
+        rows.spacing = 6
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        if services.isEmpty {
+            let empty = NSTextField(labelWithString: hasLoadedNetworkState ? "未发现网络服务" : "正在读取网络状态…")
+            empty.alignment = .center
+            empty.textColor = .secondaryLabelColor
+            rows.addArrangedSubview(empty)
+        } else {
+            for service in services.sorted(by: statusPanelServiceOrder) {
+                rows.addArrangedSubview(statusPanelServiceRow(service, allServices: services))
+            }
+        }
+
+        let document = FlippedDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(rows)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = services.count > 5
+        scroll.autohidesScrollers = true
+        scroll.documentView = document
+        NSLayoutConstraint.activate([
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            rows.topAnchor.constraint(equalTo: document.topAnchor),
+            rows.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -4),
+            rows.bottomAnchor.constraint(equalTo: document.bottomAnchor)
+        ])
+
+        let footer = statusPanelFooter(services: services)
+        let stack = NSStackView(views: [hero, sectionHeader, scroll, footer])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 9
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            headerIcon.widthAnchor.constraint(equalToConstant: 31),
+            headerIcon.heightAnchor.constraint(equalToConstant: 31),
+            hero.heightAnchor.constraint(greaterThanOrEqualToConstant: 58),
+            scroll.heightAnchor.constraint(equalToConstant: rowViewportHeight)
+        ])
+        statusPopover.contentViewController = controller
+        statusPopover.contentSize = NSSize(width: width, height: height)
+    }
+
+    private func statusPanelServiceRow(_ service: NetworkService, allServices: [NetworkService]) -> NSView {
+        let icon = NSImageView()
+        icon.image = symbol(for: service)
+        icon.symbolConfiguration = .init(pointSize: 17, weight: .medium)
+        icon.contentTintColor = service.connected ? statusColor(for: service.kind) : .secondaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let visibleName = service.kind == .wifi && service.connected ? (service.ssid ?? service.name) : service.name
+        let name = NSTextField(labelWithString: visibleName)
+        name.font = .systemFont(ofSize: 12.5, weight: service.connected ? .semibold : .regular)
+        name.lineBreakMode = .byTruncatingTail
+        var details = ["优先级 \(service.orderIndex + 1)", networkKindName(service.kind), service.connected ? "已连接" : (service.enabled ? "可用" : "已停用")]
+        if visibleName != service.name { details.append(service.name) }
+        if let ip = service.ipAddress { details.append(ip) }
+        let detail = NSTextField(labelWithString: details.joined(separator: " · "))
+        detail.font = .systemFont(ofSize: 10)
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
+        let labels = NSStackView(views: [name, detail])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 1
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var views: [NSView] = [icon, labels, spacer]
+        if (service.kind == .wifi || service.kind == .ethernet) && !service.isPrimary {
+            let others = allServices.filter {
+                $0.name != service.name && $0.enabled && ($0.kind == .wifi || $0.kind == .ethernet)
+            }.map(\.name)
+            let use = NetworkActionButton(title: "接入", target: self, action: #selector(windowSwitchToService(_:)))
+            use.bezelStyle = .rounded
+            use.controlSize = .small
+            use.payload = ["target": service.name, "others": others, "wifiDevice": service.kind == .wifi ? (service.device ?? "") : ""]
+            views.append(use)
+        }
+        let enabledSwitch = NetworkToggleSwitch()
+        enabledSwitch.target = self
+        enabledSwitch.action = #selector(windowToggleServiceSwitch(_:))
+        enabledSwitch.state = service.enabled ? .on : .off
+        enabledSwitch.controlSize = .small
+        enabledSwitch.payload = ["name": service.name]
+        enabledSwitch.toolTip = service.enabled ? "停用 \(service.name)" : "启用 \(service.name)"
+        enabledSwitch.setAccessibilityLabel("启用 \(service.name)")
+        views.append(enabledSwitch)
+        views.append(serviceActionsButton(service, allServices: allServices))
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 5, left: 5, bottom: 5, right: 1)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let card = NSBox()
+        card.boxType = .custom
+        card.cornerRadius = 9
+        card.borderWidth = 1
+        let accent = statusColor(for: service.kind)
+        card.borderColor = service.connected
+            ? accent.withAlphaComponent(0.25)
+            : NSColor.separatorColor.withAlphaComponent(0.42)
+        card.fillColor = service.connected
+            ? accent.withAlphaComponent(0.055)
+            : NSColor.controlBackgroundColor.withAlphaComponent(service.enabled ? 0.30 : 0.16)
+        card.contentView?.addSubview(row)
+        NSLayoutConstraint.activate([
+            card.heightAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            icon.widthAnchor.constraint(equalToConstant: 23),
+            icon.heightAnchor.constraint(equalToConstant: 23),
+            row.topAnchor.constraint(equalTo: card.contentView!.topAnchor, constant: 1),
+            row.bottomAnchor.constraint(equalTo: card.contentView!.bottomAnchor, constant: -1),
+            row.leadingAnchor.constraint(equalTo: card.contentView!.leadingAnchor, constant: 4),
+            row.trailingAnchor.constraint(equalTo: card.contentView!.trailingAnchor, constant: -4)
+        ])
+        return card
+    }
+
+    private func statusPanelFooter(services: [NetworkService]) -> NSView {
+        let usage = usageTracker.usage()
+        let usageText = NSTextField(labelWithString: "今日 ↓ \(formatBytes(usage.receivedBytes))  ↑ \(formatBytes(usage.sentBytes))")
+        usageText.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
+        usageText.textColor = .tertiaryLabelColor
+        let usageSpacer = NSView()
+        usageSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let menuHint = NSTextField(labelWithString: "右键状态栏显示完整菜单")
+        menuHint.font = .systemFont(ofSize: 9.5)
+        menuHint.textColor = .tertiaryLabelColor
+        let usageRow = NSStackView(views: [usageText, usageSpacer, menuHint])
+        usageRow.orientation = .horizontal
+        usageRow.alignment = .centerY
+
+        var views: [NSView] = [statusPanelProfileButton()]
+        if let wifiDevice = services.first(where: { $0.kind == .wifi })?.device {
+            let join = NetworkActionButton(title: "连接其他 Wi‑Fi…", target: self, action: #selector(showJoinWiFi(_:)))
+            join.bezelStyle = .rounded
+            join.controlSize = .small
+            join.payload = ["device": wifiDevice]
+            views.append(join)
+        }
+        let actionSpacer = NSView()
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        views.append(actionSpacer)
+        let settings = compactIconButton(symbol: "gearshape", label: "网络设置", action: #selector(openNetworkSettingsFromPanel))
+        views.append(settings)
+        let about = compactIconButton(symbol: "info.circle", label: "关于 LinkGlint", action: #selector(showAbout))
+        views.append(about)
+        let main = compactIconButton(symbol: "macwindow", label: "全部详情", action: #selector(showMainWindowFromPanel))
+        views.append(main)
+        let actions = NSStackView(views: views)
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 7
+
+        var footerViews: [NSView] = []
+        if manager.privilegedAccessState != .ready {
+            let permission = NSTextField(labelWithString: "部分操作需要更新网络权限")
+            permission.font = .systemFont(ofSize: 10.5, weight: .medium)
+            permission.textColor = .systemOrange
+            let permissionSpacer = NSView()
+            permissionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let repair = NSButton(title: "修复…", target: self, action: #selector(showPrivilegedAccessSetup))
+            repair.bezelStyle = .rounded
+            repair.controlSize = .small
+            let permissionRow = NSStackView(views: [permission, permissionSpacer, repair])
+            permissionRow.orientation = .horizontal
+            permissionRow.alignment = .centerY
+            footerViews.append(permissionRow)
+        }
+        footerViews += [usageRow, actions]
+        let footer = NSStackView(views: footerViews)
+        footer.orientation = .vertical
+        footer.alignment = .width
+        footer.spacing = 7
+        return footer
+    }
+
+    private func statusPanelProfileButton() -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        let menu = button.menu!
+        menu.removeAllItems()
+        let title = NSMenuItem(title: "快速方案", action: nil, keyEquivalent: "")
+        title.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
+        menu.addItem(title)
+        for (label, token) in [
+            ("全部物理网络启用", "__all__"),
+            ("仅 Wi-Fi", "__wifi__"),
+            ("仅有线网络", "__ethernet__")
+        ] {
+            let item = NSMenuItem(title: label, action: #selector(applyProfileMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = token
+            menu.addItem(item)
+        }
+        if !profileStore.profiles.isEmpty {
+            menu.addItem(.separator())
+            for profile in profileStore.profiles {
+                let item = NSMenuItem(title: profile.name, action: #selector(applyProfileMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "profile:\(profile.id.uuidString)"
+                menu.addItem(item)
+            }
+        }
+        return button
+    }
+
+    private func statusPanelBadge(_ title: String, color: NSColor) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        label.textColor = color
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let box = NSBox()
+        box.boxType = .custom
+        box.cornerRadius = 7
+        box.borderWidth = 1
+        box.borderColor = color.withAlphaComponent(0.28)
+        box.fillColor = color.withAlphaComponent(0.09)
+        box.contentView?.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: box.contentView!.leadingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: box.contentView!.trailingAnchor, constant: -7),
+            label.topAnchor.constraint(equalTo: box.contentView!.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: box.contentView!.bottomAnchor, constant: -2)
+        ])
+        return box
+    }
+
+    private func statusPanelServiceOrder(_ lhs: NetworkService, _ rhs: NetworkService) -> Bool {
+        lhs.orderIndex < rhs.orderIndex
+    }
+
+    @objc private func openNetworkSettingsFromPanel() {
+        statusPopover.close()
+        openNetworkSettings()
+    }
+
+    @objc private func showMainWindowFromPanel() {
+        statusPopover.close()
+        showMainWindow()
+    }
+
+    private func panelNetworkName(_ service: NetworkService?) -> String {
+        guard let service else { return hasLoadedNetworkState ? "当前离线" : "正在检测网络…" }
+        if service.kind == .wifi { return service.ssid ?? service.name }
+        return service.name
+    }
+
+    private func panelNetworkDetail(_ service: NetworkService?, presentation: NetworkStatusPresentation) -> String {
+        guard let service else { return presentation.title }
+        var parts = [networkKindName(service.kind), "已连接"]
+        if service.kind == .wifi, service.ssid != nil { parts.append(service.name) }
+        if let ip = service.ipAddress { parts.append(ip) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func networkKindName(_ kind: NetworkService.Kind) -> String {
+        switch kind {
+        case .wifi: return "无线"
+        case .ethernet: return "有线"
+        case .vpn: return "VPN"
+        case .other: return "其他"
+        }
+    }
+
+    private func statusColor(for kind: NetworkService.Kind) -> NSColor {
+        switch kind {
+        case .wifi: return .systemBlue
+        case .ethernet: return .systemTeal
+        case .vpn: return .systemPurple
+        case .other: return .systemGray
+        }
     }
 
     private func schedulePathRefresh() {
@@ -459,7 +889,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                     }
                     self.usageTracker.record(receivedBytes: totalReceived, sentBytes: totalSent, at: sampleDate)
+                    self.currentDownloadBytesPerSecond = Double(totalReceived) / interval
+                    self.currentUploadBytesPerSecond = Double(totalSent) / interval
                     self.updateUsageDisplay()
+                    self.applyMenuBarAppearance()
                 }
                 self.previousTrafficCounters = counters
                 self.previousTrafficSampleDate = sampleDate
@@ -477,6 +910,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return String(format: "%.0f B/s", bytesPerSecond)
     }
 
+    private func scheduleTrafficTimer() {
+        trafficTimer?.invalidate()
+        trafficTimer = Timer.scheduledTimer(withTimeInterval: preferences.trafficRefreshInterval, repeats: true) { [weak self] _ in
+            self?.sampleTraffic()
+        }
+    }
+
     private func formatBytes(_ bytes: UInt64) -> String {
         let value = Double(bytes)
         if value >= 1_000_000_000 { return String(format: "%.2f GB", value / 1_000_000_000) }
@@ -487,8 +927,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func applyMenuBarAppearance() {
         guard let button = statusItem?.button else { return }
-        button.title = preferences.showMenuBarTitle ? menuBarStatusTitle : ""
-        button.imagePosition = preferences.showMenuBarTitle ? .imageLeading : .imageOnly
+        let showsText = preferences.showMenuBarTitle || preferences.showMenuBarSpeed
+        let networkPresentation = NetworkStatusPresentation.make(services: lastServices, hasLoaded: hasLoadedNetworkState)
+        let presentation = MenuBarTrafficPresentation.make(
+            networkTitle: networkPresentation.title,
+            downloadBytesPerSecond: currentDownloadBytesPerSecond,
+            uploadBytesPerSecond: currentUploadBytesPerSecond,
+            showsNetworkTitle: preferences.showMenuBarTitle,
+            showsSpeed: preferences.showMenuBarSpeed,
+            usesTwoLines: preferences.menuBarSpeedTwoLines,
+            usesBits: preferences.menuBarSpeedInBits
+        )
+        if presentation.usesTwoLines {
+            button.attributedTitle = NSAttributedString(string: "")
+            button.image = twoLineMenuBarImage(
+                symbolName: networkPresentation.symbolName,
+                text: presentation.text
+            )
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+            statusItem.length = ceil(button.image?.size.width ?? NSStatusItem.squareLength) + 8
+        } else {
+            button.attributedTitle = NSAttributedString(string: presentation.text, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            ])
+            button.image = menuBarImage(
+                symbolName: networkPresentation.symbolName,
+                accessibilityDescription: networkPresentation.title
+            )
+            button.imagePosition = showsText ? .imageLeading : .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            statusItem.length = showsText ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        }
+        button.setAccessibilityLabel("LinkGlint · \(menuBarStatusTitle) · 下载 \(formatRate(currentDownloadBytesPerSecond)) · 上传 \(formatRate(currentUploadBytesPerSecond))")
+    }
+
+    private func twoLineMenuBarImage(symbolName: String, text: String) -> NSImage? {
+        let lines = text.components(separatedBy: "\n")
+        guard lines.count == 2 else { return menuBarImage(symbolName: symbolName, accessibilityDescription: text) }
+
+        let topFont = NSFont.systemFont(ofSize: 8.5, weight: .semibold)
+        let bottomFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
+        let topAttributes: [NSAttributedString.Key: Any] = [.font: topFont, .foregroundColor: NSColor.black]
+        let bottomAttributes: [NSAttributedString.Key: Any] = [.font: bottomFont, .foregroundColor: NSColor.black]
+        let topWidth = ceil((lines[0] as NSString).size(withAttributes: topAttributes).width)
+        let bottomWidth = ceil((lines[1] as NSString).size(withAttributes: bottomAttributes).width)
+        let iconSize: CGFloat = 15
+        let spacing: CGFloat = 4
+        let textWidth = max(topWidth, bottomWidth)
+        let imageSize = NSSize(width: iconSize + spacing + textWidth, height: 18)
+
+        let image = NSImage(size: imageSize, flipped: false) { rect in
+            NSColor.black.set()
+            if let symbol = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: nil
+            )?.withSymbolConfiguration(.init(pointSize: 14, weight: .semibold)) {
+                symbol.draw(
+                    in: NSRect(x: 0, y: (rect.height - iconSize) / 2, width: iconSize, height: iconSize),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1
+                )
+            }
+            let textX = iconSize + spacing
+            (lines[0] as NSString).draw(
+                in: NSRect(x: textX, y: 8.7, width: textWidth, height: 9.3),
+                withAttributes: topAttributes
+            )
+            (lines[1] as NSString).draw(
+                in: NSRect(x: textX, y: -0.2, width: textWidth, height: 9.2),
+                withAttributes: bottomAttributes
+            )
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = text.replacingOccurrences(of: "\n", with: "，")
+        return image
+    }
+
+    private func menuBarImage(symbolName: String, accessibilityDescription: String) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
+            .withSymbolConfiguration(configuration)
+        // Template rendering automatically follows light/dark menu-bar appearance
+        // and the highlighted state while the menu is open.
+        image?.isTemplate = true
+        return image
     }
 
     private var menuBarStatusTitle: String {
@@ -574,6 +1099,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         } catch {
             showError(error)
+        }
+    }
+
+    @objc private func showJoinWiFi(_ sender: NetworkActionButton) {
+        guard let device = sender.payload?["device"] as? String else { return }
+        let alert = NSAlert()
+        alert.messageText = "连接其他 Wi‑Fi"
+        alert.informativeText = "输入无线网络名称；开放网络可将密码留空。"
+        alert.addButton(withTitle: "连接")
+        alert.addButton(withTitle: "取消")
+        let networkName = NSTextField(string: "")
+        networkName.placeholderString = "网络名称（SSID）"
+        let password = NSSecureTextField(string: "")
+        password.placeholderString = "密码（可留空）"
+        let fields = NSStackView(views: [networkName, password])
+        fields.orientation = .vertical
+        fields.alignment = .width
+        fields.spacing = 8
+        fields.frame = NSRect(x: 0, y: 0, width: 340, height: 60)
+        alert.accessoryView = fields
+        statusPopover.close()
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let ssid = networkName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ssid.isEmpty else {
+            showError(NetworkError.commandFailed("请输入无线网络名称。"))
+            return
+        }
+        performPrivilegedChange(description: "连接 Wi‑Fi：\(ssid)") { [manager] in
+            try manager.joinWiFi(device: device, networkName: ssid, password: password.stringValue)
+        }
+    }
+
+    @objc private func renameNetworkService(_ sender: NSMenuItem) {
+        guard let oldName = sender.representedObject as? String else { return }
+        let alert = NSAlert()
+        alert.messageText = "重命名网络服务"
+        alert.informativeText = "名称会显示在 LinkGlint 与 macOS 网络设置中。"
+        alert.addButton(withTitle: "重命名")
+        alert.addButton(withTitle: "取消")
+        let input = NSTextField(string: oldName)
+        input.frame = NSRect(x: 0, y: 0, width: 340, height: 26)
+        input.selectText(nil)
+        alert.accessoryView = input
+        statusPopover.close()
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != oldName else { return }
+        performPrivilegedChange(description: "重命名 \(oldName)") { [manager] in
+            try manager.renameService(oldName, to: newName)
         }
     }
 
@@ -773,10 +1349,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateLoginItemControls() {
         loginItemCheckbox?.state = loginItemState
         loginItemCheckbox?.toolTip = loginItemState == .mixed ? "需要在系统设置中批准" : nil
-        if let menu = statusItem.menu {
-            for item in menu.items where item.title == "登录时启动" {
-                item.state = loginItemState
-            }
+        loginItemStatusLabel?.stringValue = loginItemStatusText
+        loginItemStatusLabel?.textColor = loginItemState == .mixed ? .systemOrange : .secondaryLabelColor
+        if let menu = statusContextMenu {
+            menu.items.first {
+                $0.identifier == NSUserInterfaceItemIdentifier("launch-at-login")
+            }?.state = loginItemState
+        }
+    }
+
+    private var loginItemStatusText: String {
+        switch SMAppService.mainApp.status {
+        case .enabled: return "已启用 · 登录后自动运行"
+        case .requiresApproval: return "等待系统批准 · 请前往系统设置 → 通用 → 登录项"
+        case .notRegistered: return "未启用"
+        case .notFound: return "请从“应用程序”文件夹运行后重试"
+        @unknown default: return "状态未知"
         }
     }
 
@@ -936,7 +1524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let today = usageTracker.usage()
         let text = "今日  ↓ \(formatBytes(today.receivedBytes))   ↑ \(formatBytes(today.sentBytes))"
         usageLabel?.stringValue = text
-        if let item = statusItem?.menu?.items.first(where: { $0.identifier?.rawValue == "daily-usage" }) {
+        if let item = statusContextMenu?.items.first(where: { $0.identifier?.rawValue == "daily-usage" }) {
             item.title = "今日用量：↓ \(formatBytes(today.receivedBytes)) · ↑ \(formatBytes(today.sentBytes))"
         }
     }
@@ -972,13 +1560,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         if let preferencesWindow {
             updatePrivilegedAccessControls()
+            updateLoginItemControls()
             preferencesWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 570),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -1005,6 +1594,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             key: "showMenuBarTitle",
             value: preferences.showMenuBarTitle
         )
+        let menuSpeed = preferenceCheckbox(
+            title: "在菜单栏显示实时上传和下载速度",
+            key: "showMenuBarSpeed",
+            value: preferences.showMenuBarSpeed
+        )
+        let menuSpeedTwoLines = preferenceCheckbox(
+            title: "网速使用紧凑双行显示",
+            key: "menuBarSpeedTwoLines",
+            value: preferences.menuBarSpeedTwoLines
+        )
+        let menuSpeedBits = preferenceCheckbox(
+            title: "网速使用 bit/s（关闭时使用 Byte/s）",
+            key: "menuBarSpeedInBits",
+            value: preferences.menuBarSpeedInBits
+        )
+        let intervalTitle = NSTextField(labelWithString: "网速刷新间隔")
+        let intervalPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        intervalPopup.removeAllItems()
+        for value in [1.0, 2.0, 5.0] {
+            let item = NSMenuItem(title: String(format: "%.0f 秒", value), action: nil, keyEquivalent: "")
+            item.representedObject = value
+            intervalPopup.menu?.addItem(item)
+        }
+        intervalPopup.selectItem(at: [1.0, 2.0, 5.0].firstIndex(of: preferences.trafficRefreshInterval) ?? 1)
+        intervalPopup.target = self
+        intervalPopup.action = #selector(trafficIntervalChanged(_:))
+        intervalPopup.controlSize = .small
+        let intervalSpacer = NSView()
+        intervalSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let intervalRow = NSStackView(views: [intervalTitle, intervalSpacer, intervalPopup])
+        intervalRow.orientation = .horizontal
+        intervalRow.alignment = .centerY
         let openWindow = preferenceCheckbox(
             title: "启动时自动显示主窗口",
             key: "openWindowAtLaunch",
@@ -1015,9 +1636,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             key: "autoRunDiagnostics",
             value: preferences.autoRunDiagnostics
         )
-        let generalStack = NSStackView(views: [menuTitle, openWindow, autoDiagnostic])
+        loginItemCheckbox = NSButton(
+            checkboxWithTitle: "登录时自动启动 LinkGlint",
+            target: self,
+            action: #selector(toggleLaunchAtLoginButton(_:))
+        )
+        let loginSettingsButton = NSButton(
+            title: "系统设置…",
+            target: self,
+            action: #selector(openLoginItemSettings)
+        )
+        loginSettingsButton.bezelStyle = .inline
+        loginSettingsButton.controlSize = .small
+        let loginSpacer = NSView()
+        loginSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let loginRow = NSStackView(views: [loginItemCheckbox, loginSpacer, loginSettingsButton])
+        loginRow.orientation = .horizontal
+        loginRow.alignment = .centerY
+        loginRow.spacing = 8
+        loginItemStatusLabel = NSTextField(labelWithString: "")
+        loginItemStatusLabel?.font = .systemFont(ofSize: 11)
+        loginItemStatusLabel?.textColor = .secondaryLabelColor
+        let generalStack = NSStackView(views: [
+            loginRow, loginItemStatusLabel!, menuTitle, menuSpeed,
+            menuSpeedTwoLines, menuSpeedBits, intervalRow, openWindow, autoDiagnostic
+        ])
         generalStack.orientation = .vertical
-        generalStack.alignment = .leading
+        generalStack.alignment = .width
         generalStack.spacing = 9
         generalStack.translatesAutoresizingMaskIntoConstraints = false
         let generalPanel = NSBox()
@@ -1097,8 +1742,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             accessStack.trailingAnchor.constraint(equalTo: accessPanel.contentView!.trailingAnchor, constant: -14)
         ])
         preferencesWindow = window
+        updateLoginItemControls()
         updatePrivilegedAccessControls()
         window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showAbout() {
+        statusPopover.close()
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let credits = NSAttributedString(
+            string: "原生 macOS 网络状态与管理工具\n\n作者：HarenaGodz（Harena）\nGitHub：github.com/HarenaGodz/LinkGlint\nMIT License",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraph
+            ]
+        )
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "LinkGlint",
+            .applicationVersion: "版本 \(version)",
+            .version: "构建 \(build)",
+            .credits: credits,
+            .applicationIcon: NSApp.applicationIconImage ?? NSImage()
+        ])
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -1115,6 +1785,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "showMenuBarTitle":
             preferences.showMenuBarTitle = enabled
             applyMenuBarAppearance()
+        case "showMenuBarSpeed":
+            preferences.showMenuBarSpeed = enabled
+            applyMenuBarAppearance()
+        case "menuBarSpeedTwoLines":
+            preferences.menuBarSpeedTwoLines = enabled
+            applyMenuBarAppearance()
+        case "menuBarSpeedInBits":
+            preferences.menuBarSpeedInBits = enabled
+            applyMenuBarAppearance()
         case "openWindowAtLaunch":
             preferences.openWindowAtLaunch = enabled
         case "autoRunDiagnostics":
@@ -1122,6 +1801,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         default:
             break
         }
+    }
+
+    @objc private func trafficIntervalChanged(_ sender: NSPopUpButton) {
+        guard let value = sender.selectedItem?.representedObject as? Double else { return }
+        preferences.trafficRefreshInterval = value
+        previousTrafficSampleDate = nil
+        previousTrafficCounters.removeAll()
+        scheduleTrafficTimer()
+        sampleTraffic()
     }
 
     @objc private func closePreferences() {
@@ -1508,6 +2196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(.separator())
         addToolItem(menu, title: "打开网络设置…", symbol: "gear", action: #selector(openNetworkSettings))
         addToolItem(menu, title: "偏好设置…", symbol: "slider.horizontal.3", action: #selector(showPreferences))
+        addToolItem(menu, title: "关于 LinkGlint", symbol: "info.circle", action: #selector(showAbout))
         return button
     }
 
@@ -1680,6 +2369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         menu.addItem(.separator())
+        let rename = NSMenuItem(title: "重命名网络服务…", action: #selector(renameNetworkService(_:)), keyEquivalent: "")
+        rename.target = self
+        rename.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+        rename.representedObject = service.name
+        menu.addItem(rename)
+
         let dns = NSMenuItem(title: "设置 DNS…", action: #selector(showDNSSettingsMenu(_:)), keyEquivalent: "")
         dns.target = self
         dns.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: nil)
@@ -1779,8 +2474,72 @@ private final class NetworkActionButton: NSButton {
     var payload: NSDictionary?
 }
 
-private final class NetworkToggleSwitch: NSSwitch {
+private final class NetworkToggleSwitch: NSButton {
     var payload: NSDictionary?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 36, height: 20) }
+
+    private func configure() {
+        setButtonType(.pushOnPushOff)
+        title = ""
+        isBordered = false
+        focusRingType = .none
+        setAccessibilityRole(.checkBox)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSRect(x: 0, y: (bounds.height - 20) / 2, width: 36, height: 20)
+        let isOn = state == .on
+        let trackColor = isOn ? NSColor.systemGreen : NSColor.tertiaryLabelColor.withAlphaComponent(0.28)
+        trackColor.setFill()
+        NSBezierPath(roundedRect: track, xRadius: 10, yRadius: 10).fill()
+
+        let knobX = isOn ? track.maxX - 18 : track.minX + 2
+        let knobRect = NSRect(x: knobX, y: track.minY + 2, width: 16, height: 16)
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: knobRect).fill()
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        let outline = NSBezierPath(ovalIn: knobRect.insetBy(dx: 0.25, dy: 0.25))
+        outline.lineWidth = 0.5
+        outline.stroke()
+    }
+}
+
+private final class StatusPanelBackgroundView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        updateBackgroundColor()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        updateBackgroundColor()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackgroundColor()
+    }
+
+    private func updateBackgroundColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+    }
 }
 
 /// NSScrollView otherwise starts an auto-layout document at its bottom edge.

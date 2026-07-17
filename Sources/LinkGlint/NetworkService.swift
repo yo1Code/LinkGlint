@@ -123,10 +123,13 @@ final class NetworkManager {
         let orderOutput = try CommandRunner.run(networksetup, ["-listnetworkserviceorder"])
         let serviceStates = parseServiceStates(enabledOutput)
         let mappings = parseServiceMappings(orderOutput)
+        let configuredOrder = parseServiceOrder(orderOutput)
+        let priorityByName = Dictionary(uniqueKeysWithValues: configuredOrder.enumerated().map { ($0.element, $0.offset) })
         let primaryDevice = defaultRouteInterface()
 
-        return serviceStates.enumerated().map { index, state in
+        return serviceStates.enumerated().map { fallbackIndex, state in
             let (name, enabled) = state
+            let priorityIndex = priorityByName[name] ?? (configuredOrder.count + fallbackIndex)
             let mapping = mappings[name]
             let info = (try? CommandRunner.run(networksetup, ["-getinfo", name])) ?? ""
             let ip = parseValue("IP address", in: info).flatMap { value in
@@ -158,7 +161,7 @@ final class NetworkManager {
 
             return NetworkService(
                 name: name,
-                orderIndex: index,
+                orderIndex: priorityIndex,
                 hardwarePort: mapping?.port,
                 device: device,
                 enabled: enabled,
@@ -173,7 +176,7 @@ final class NetworkManager {
                 kind: kind,
                 wifiPowered: wifiPower
             )
-        }
+        }.sorted { $0.orderIndex < $1.orderIndex }
     }
 
     func fetchTrafficCounters() throws -> [String: InterfaceCounters] {
@@ -215,6 +218,16 @@ final class NetworkManager {
 
     func setWiFiPower(device: String, enabled: Bool) throws {
         try privilegedHelper.run(["wifi", device, enabled ? "on" : "off"])
+    }
+
+    func joinWiFi(device: String, networkName: String, password: String?) throws {
+        var arguments = ["join-wifi", device, networkName]
+        if let password, !password.isEmpty { arguments.append(password) }
+        try privilegedHelper.run(arguments)
+    }
+
+    func renameService(_ oldName: String, to newName: String) throws {
+        try privilegedHelper.run(["rename", oldName, newName])
     }
 
     func setDNSServers(service: String, servers: [String]) throws {
@@ -294,6 +307,20 @@ final class NetworkManager {
             }
         }
         return result
+    }
+
+    func parseServiceOrder(_ output: String) -> [String] {
+        output.split(separator: "\n", omittingEmptySubsequences: false).compactMap { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            guard line.range(of: #"^\((?:\d+|\*)\)\s+"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            return line.replacingOccurrences(
+                of: #"^\((?:\d+|\*)\)\s+"#,
+                with: "",
+                options: .regularExpression
+            )
+        }
     }
 
     func parseValue(_ key: String, in text: String) -> String? {

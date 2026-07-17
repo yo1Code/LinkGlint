@@ -2,6 +2,60 @@ import XCTest
 @testable import LinkGlint
 
 final class NetworkStatusPresentationTests: XCTestCase {
+    func testMenuBarTrafficSupportsSingleAndTwoLineLayouts() {
+        XCTAssertEqual(
+            MenuBarTrafficPresentation.make(
+                networkTitle: "无线·Office",
+                downloadBytesPerSecond: 1_250_000,
+                uploadBytesPerSecond: 42_000,
+                showsNetworkTitle: true,
+                showsSpeed: true,
+                usesTwoLines: false,
+                usesBits: false
+            ),
+            .init(text: "无线·Office  ↓1.2MB/s ↑42KB/s", usesTwoLines: false)
+        )
+        XCTAssertEqual(
+            MenuBarTrafficPresentation.make(
+                networkTitle: "无线·Office",
+                downloadBytesPerSecond: 1_250_000,
+                uploadBytesPerSecond: 42_000,
+                showsNetworkTitle: true,
+                showsSpeed: true,
+                usesTwoLines: true,
+                usesBits: true
+            ),
+            .init(text: "无线·Office\n↓10.0Mb/s  ↑336Kb/s", usesTwoLines: true)
+        )
+    }
+
+    func testMenuBarTrafficCanShowOnlySpeedOrOnlyNetwork() {
+        XCTAssertEqual(
+            MenuBarTrafficPresentation.make(
+                networkTitle: "有线·LAN",
+                downloadBytesPerSecond: 0,
+                uploadBytesPerSecond: 0,
+                showsNetworkTitle: false,
+                showsSpeed: true,
+                usesTwoLines: true,
+                usesBits: false
+            ),
+            .init(text: "↓0B/s\n↑0B/s", usesTwoLines: true)
+        )
+        XCTAssertEqual(
+            MenuBarTrafficPresentation.make(
+                networkTitle: "有线·LAN",
+                downloadBytesPerSecond: 10,
+                uploadBytesPerSecond: 20,
+                showsNetworkTitle: true,
+                showsSpeed: false,
+                usesTwoLines: true,
+                usesBits: false
+            ),
+            .init(text: "有线·LAN", usesTwoLines: false)
+        )
+    }
+
     func testLoadingAndOfflinePresentations() {
         XCTAssertEqual(
             NetworkStatusPresentation.make(services: [], hasLoaded: false),
@@ -18,7 +72,7 @@ final class NetworkStatusPresentationTests: XCTestCase {
             services: [service(kind: .wifi, ssid: "Office", primary: true)],
             hasLoaded: true
         )
-        XCTAssertEqual(value, .init(title: "Wi‑Fi · Office", symbolName: "wifi"))
+        XCTAssertEqual(value, .init(title: "无线·Office", symbolName: "wifi"))
     }
 
     func testPrimaryEthernetWinsOverAnotherConnectedService() {
@@ -29,7 +83,27 @@ final class NetworkStatusPresentationTests: XCTestCase {
             ],
             hasLoaded: true
         )
-        XCTAssertEqual(value, .init(title: "有线 · 已连接", symbolName: "cable.connector"))
+        XCTAssertEqual(value, .init(title: "有线·测试服务", symbolName: "cable.connector"))
+    }
+
+    func testVPNAndOtherPresentationsIncludeServiceName() {
+        XCTAssertEqual(
+            NetworkStatusPresentation.make(services: [service(kind: .vpn, primary: true)], hasLoaded: true),
+            .init(title: "VPN·测试服务", symbolName: "lock.shield")
+        )
+        XCTAssertEqual(
+            NetworkStatusPresentation.make(services: [service(kind: .other, primary: true)], hasLoaded: true),
+            .init(title: "其他·测试服务", symbolName: "network")
+        )
+    }
+
+    func testLongNetworkNameIsKeptButCompact() {
+        let value = NetworkStatusPresentation.make(
+            services: [service(kind: .wifi, ssid: "Very Long Office Wireless Network", primary: true)],
+            hasLoaded: true
+        )
+        XCTAssertEqual(value.title, "无线·Very Lon…")
+        XCTAssertEqual(value.symbolName, "wifi")
     }
 
     private func service(

@@ -71,7 +71,7 @@ private func run(_ arguments: [String]) throws {
 
     if arguments == ["status"] {
         guard geteuid() == 0 else { throw HelperFailure.permission }
-        print("LinkGlintHelper ready")
+        print("LinkGlintHelper ready 2")
         return
     }
     guard geteuid() == 0 else { throw HelperFailure.permission }
@@ -88,6 +88,21 @@ private func run(_ arguments: [String]) throws {
         try validateDevice(arguments[1])
         try validateState(arguments[2])
         try runNetworkSetup(["-setairportpower", arguments[1], arguments[2]])
+
+    case "join-wifi":
+        guard arguments.count == 3 || arguments.count == 4 else {
+            throw HelperFailure.usage("Usage: join-wifi DEVICE NETWORK [PASSWORD]")
+        }
+        try validateDevice(arguments[1])
+        try validateName(arguments[2], label: "network name")
+        if arguments.count == 4 { try validateName(arguments[3], label: "network password") }
+        try runNetworkSetup(["-setairportnetwork"] + Array(arguments.dropFirst()))
+
+    case "rename":
+        guard arguments.count == 3 else { throw HelperFailure.usage("Usage: rename OLD_NAME NEW_NAME") }
+        try validateName(arguments[1], label: "old service name")
+        try validateName(arguments[2], label: "new service name")
+        try runNetworkSetup(["-renamenetworkservice", arguments[1], arguments[2]])
 
     case "dns":
         guard arguments.count >= 3, arguments.count <= 18 else {
