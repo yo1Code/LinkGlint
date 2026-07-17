@@ -117,6 +117,25 @@ final class NetworkManagerTests: XCTestCase {
 }
 
 final class TrafficSampleCalculatorTests: XCTestCase {
+    func testOptimisticSwitchUpdatesPrimaryServiceImmediately() {
+        let ethernet = service(name: "USB LAN", device: "en7", primary: true, kind: .ethernet)
+        let wifi = service(name: "Wi-Fi", device: "en0", primary: false, kind: .wifi)
+
+        let result = NetworkServiceTransition.switching(
+            services: [ethernet, wifi],
+            target: "Wi-Fi",
+            disabledServices: ["USB LAN"]
+        )
+
+        XCTAssertTrue(result[1].isPrimary)
+        XCTAssertTrue(result[1].connected)
+        XCTAssertTrue(result[1].enabled)
+        XCTAssertEqual(result[1].wifiPowered, true)
+        XCTAssertFalse(result[0].isPrimary)
+        XCTAssertFalse(result[0].connected)
+        XCTAssertFalse(result[0].enabled)
+    }
+
     func testUsesDefaultRouteOnlyAndDoesNotDoubleCountVPN() {
         let previous = [
             "en0": InterfaceCounters(receivedBytes: 1_000, sentBytes: 2_000),

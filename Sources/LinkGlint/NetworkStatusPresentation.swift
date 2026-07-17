@@ -56,6 +56,27 @@ struct MenuBarTrafficPresentation: Equatable {
 
 }
 
+struct MenuBarRenderState: Equatable {
+    let symbolName: String
+    let presentation: MenuBarTrafficPresentation
+}
+
+enum MenuBarRenderPolicy {
+    static func make(
+        latestSymbolName: String,
+        latestPresentation: MenuBarTrafficPresentation,
+        renderedPresentation: MenuBarTrafficPresentation?,
+        panelIsOpen: Bool
+    ) -> MenuBarRenderState {
+        MenuBarRenderState(
+            symbolName: latestSymbolName,
+            presentation: panelIsOpen
+                ? (renderedPresentation ?? latestPresentation)
+                : latestPresentation
+        )
+    }
+}
+
 enum TrafficRateFormatter {
     static func string(bytesPerSecond: Double, usesBits: Bool) -> String {
         let safeBytes = bytesPerSecond.isFinite ? max(bytesPerSecond, 0) : 0
@@ -77,5 +98,15 @@ enum TrafficRateFormatter {
             number = String(format: "%.1f", scaled)
         }
         return "\(number) \(units[unitIndex])"
+    }
+}
+
+enum MenuBarIconLayout {
+    static func fittedSize(source: CGSize, bounding: CGSize) -> CGSize {
+        guard source.width > 0, source.height > 0, bounding.width > 0, bounding.height > 0 else {
+            return .zero
+        }
+        let scale = min(bounding.width / source.width, bounding.height / source.height)
+        return CGSize(width: source.width * scale, height: source.height * scale)
     }
 }

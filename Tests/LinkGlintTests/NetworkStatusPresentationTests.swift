@@ -66,6 +66,47 @@ final class NetworkStatusPresentationTests: XCTestCase {
         XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: .infinity, usesBits: true), "0 bps")
     }
 
+    func testMenuBarIconFitPreservesWideAndTallAspectRatios() {
+        XCTAssertEqual(
+            MenuBarIconLayout.fittedSize(
+                source: CGSize(width: 20, height: 10),
+                bounding: CGSize(width: 18, height: 16)
+            ),
+            CGSize(width: 18, height: 9)
+        )
+        XCTAssertEqual(
+            MenuBarIconLayout.fittedSize(
+                source: CGSize(width: 10, height: 20),
+                bounding: CGSize(width: 18, height: 16)
+            ),
+            CGSize(width: 8, height: 16)
+        )
+    }
+
+    func testOpenPanelFreezesTextButAcceptsLatestNetworkSymbol() {
+        let old = MenuBarTrafficPresentation(text: "↓1.0 MB/s\n↑20 KB/s", usesTwoLines: true)
+        let latest = MenuBarTrafficPresentation(text: "↓900 MB/s\n↑8.0 MB/s", usesTwoLines: true)
+
+        XCTAssertEqual(
+            MenuBarRenderPolicy.make(
+                latestSymbolName: "wifi",
+                latestPresentation: latest,
+                renderedPresentation: old,
+                panelIsOpen: true
+            ),
+            MenuBarRenderState(symbolName: "wifi", presentation: old)
+        )
+        XCTAssertEqual(
+            MenuBarRenderPolicy.make(
+                latestSymbolName: "wifi",
+                latestPresentation: latest,
+                renderedPresentation: old,
+                panelIsOpen: false
+            ),
+            MenuBarRenderState(symbolName: "wifi", presentation: latest)
+        )
+    }
+
     func testLoadingAndOfflinePresentations() {
         XCTAssertEqual(
             NetworkStatusPresentation.make(services: [], hasLoaded: false),

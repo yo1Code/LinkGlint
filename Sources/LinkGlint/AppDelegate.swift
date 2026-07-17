@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let pathMonitorQueue = DispatchQueue(label: "local.codex.LinkGlint.path-monitor")
     private var pendingPathRefresh: DispatchWorkItem?
     private var isRefreshing = false
+    private var isApplyingServiceSwitch = false
+    private var networkStateGeneration = 0
     private var isSamplingTraffic = false
     private var isDiagnosing = false
     private var lastServices: [NetworkService] = []
@@ -47,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var currentDownloadBytesPerSecond: Double = 0
     private var currentUploadBytesPerSecond: Double = 0
     private var lastMenuBarRenderKey: String?
+    private var lastRenderedMenuBarPresentation: MenuBarTrafficPresentation?
     private var trafficLabels: [String: NSTextField] = [:]
     private var lastAutoDiagnosticAt: Date?
     private var hasLoadedNetworkState = false
@@ -175,8 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func refresh() {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, !isApplyingServiceSwitch else { return }
         isRefreshing = true
+        let generation = networkStateGeneration
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -184,6 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 let services = try self.manager.fetchServices()
                 DispatchQueue.main.async {
                     self.isRefreshing = false
+                    guard generation == self.networkStateGeneration else {
+                        if !self.isApplyingServiceSwitch { self.refresh() }
+                        return
+                    }
                     self.hasLoadedNetworkState = true
                     let servicesChanged = services != self.lastServices
                     self.lastServices = services
@@ -509,7 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let visibleRows = min(max(services.count, 1), 5)
         let rowViewportHeight = CGFloat(visibleRows * 56 + max(visibleRows - 1, 0) * 6)
         let permissionHeight: CGFloat = manager.privilegedAccessState == .ready ? 0 : 34
-        let height: CGFloat = 220 + permissionHeight + rowViewportHeight
+        let height: CGFloat = 236 + permissionHeight + rowViewportHeight
         let controller = NSViewController()
         // NSPopover already supplies the window shape and shadow. A second
         // vibrancy layer here used to blend strongly with colorful wallpapers,
@@ -530,7 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let headline = NSTextField(labelWithString: panelNetworkName(active))
         headline.font = .systemFont(ofSize: 17, weight: .semibold)
         headline.lineBreakMode = .byTruncatingTail
-        let subheadline = NSTextField(labelWithString: panelNetworkDetail(active, presentation: presentation))
+        let subheadline = NSTextField(labelWithString: panelNetworkDetail(active))
         subheadline.font = .systemFont(ofSize: 11)
         subheadline.textColor = .secondaryLabelColor
         subheadline.lineBreakMode = .byTruncatingTail
@@ -562,6 +570,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             header.bottomAnchor.constraint(equalTo: hero.contentView!.bottomAnchor, constant: -11),
             header.leadingAnchor.constraint(equalTo: hero.contentView!.leadingAnchor, constant: 12),
             header.trailingAnchor.constraint(equalTo: hero.contentView!.trailingAnchor, constant: -9)
+        ])
+
+        let brandTitle = NSTextField(labelWithString: "LinkGlint")
+        brandTitle.font = .systemFont(ofSize: 14, weight: .bold)
+        brandTitle.alignment = .center
+        brandTitle.translatesAutoresizingMaskIntoConstraints = false
+        let brandDivider = NSBox()
+        brandDivider.boxType = .separator
+        brandDivider.translatesAutoresizingMaskIntoConstraints = false
+        let brandHeader = NSView()
+        brandHeader.translatesAutoresizingMaskIntoConstraints = false
+        brandHeader.addSubview(brandTitle)
+        brandHeader.addSubview(brandDivider)
+        NSLayoutConstraint.activate([
+            brandTitle.centerXAnchor.constraint(equalTo: brandHeader.centerXAnchor),
+            brandTitle.topAnchor.constraint(equalTo: brandHeader.topAnchor),
+            brandDivider.leadingAnchor.constraint(equalTo: brandHeader.leadingAnchor),
+            brandDivider.trailingAnchor.constraint(equalTo: brandHeader.trailingAnchor),
+            brandDivider.bottomAnchor.constraint(equalTo: brandHeader.bottomAnchor),
+            brandHeader.heightAnchor.constraint(equalToConstant: 24)
         ])
 
         let sectionLabel = NSTextField(labelWithString: "网络服务")
@@ -611,17 +639,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ])
 
         let footer = statusPanelFooter(services: services)
-        let stack = NSStackView(views: [hero, sectionHeader, scroll, footer])
+        let stack = NSStackView(views: [brandHeader, hero, sectionHeader, scroll, footer])
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 9
+        stack.spacing = 7
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
             headerIcon.widthAnchor.constraint(equalToConstant: 31),
             headerIcon.heightAnchor.constraint(equalToConstant: 31),
             hero.heightAnchor.constraint(greaterThanOrEqualToConstant: 58),
@@ -845,8 +873,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return service.name
     }
 
-    private func panelNetworkDetail(_ service: NetworkService?, presentation: NetworkStatusPresentation) -> String {
-        guard let service else { return presentation.title }
+    private func panelNetworkDetail(_ service: NetworkService?) -> String {
+        guard let service else { return hasLoadedNetworkState ? "当前离线" : "正在检测网络…" }
         var parts = [networkKindName(service.kind), "已连接"]
         if service.kind == .wifi, service.ssid != nil { parts.append(service.name) }
         if let ip = service.ipAddress { parts.append(ip) }
@@ -947,12 +975,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func applyMenuBarAppearance() {
         guard let button = statusItem?.button else { return }
-        // Keep the popover anchor perfectly still while the user interacts with
-        // it. The latest rate is painted immediately after the panel closes.
-        guard !statusPopover.isShown else { return }
         let showsText = preferences.showMenuBarTitle || preferences.showMenuBarSpeed
         let networkPresentation = NetworkStatusPresentation.make(services: lastServices, hasLoaded: hasLoadedNetworkState)
-        let presentation = MenuBarTrafficPresentation.make(
+        let latestPresentation = MenuBarTrafficPresentation.make(
             networkTitle: networkPresentation.title,
             downloadBytesPerSecond: currentDownloadBytesPerSecond,
             uploadBytesPerSecond: currentUploadBytesPerSecond,
@@ -961,13 +986,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             usesTwoLines: preferences.menuBarSpeedTwoLines,
             usesBits: preferences.menuBarSpeedInBits
         )
-        let renderKey = "\(networkPresentation.symbolName)|\(presentation.usesTwoLines)|\(presentation.text)"
+        // While the panel is open, freeze only the text geometry so its anchor
+        // cannot move. The network symbol can still change immediately.
+        let renderState = MenuBarRenderPolicy.make(
+            latestSymbolName: networkPresentation.symbolName,
+            latestPresentation: latestPresentation,
+            renderedPresentation: lastRenderedMenuBarPresentation,
+            panelIsOpen: statusPopover.isShown
+        )
+        let presentation = renderState.presentation
+        let renderKey = "\(renderState.symbolName)|\(presentation.usesTwoLines)|\(presentation.text)"
         guard renderKey != lastMenuBarRenderKey else { return }
         lastMenuBarRenderKey = renderKey
+        lastRenderedMenuBarPresentation = presentation
         if presentation.usesTwoLines {
             button.attributedTitle = NSAttributedString(string: "")
             button.image = twoLineMenuBarImage(
-                symbolName: networkPresentation.symbolName,
+                symbolName: renderState.symbolName,
                 text: presentation.text
             )
             button.imagePosition = .imageOnly
@@ -977,7 +1012,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             let title = menuBarAttributedTitle(presentation.text)
             button.attributedTitle = title
             button.image = menuBarImage(
-                symbolName: networkPresentation.symbolName,
+                symbolName: renderState.symbolName,
                 accessibilityDescription: networkPresentation.title
             )
             button.imagePosition = showsText ? .imageLeading : .imageOnly
@@ -1001,10 +1036,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let bottomAttributes: [NSAttributedString.Key: Any] = [.font: bottomFont, .foregroundColor: NSColor.black]
         let topWidth = ceil((lines[0] as NSString).size(withAttributes: topAttributes).width)
         let bottomWidth = ceil((lines[1] as NSString).size(withAttributes: bottomAttributes).width)
-        let iconSize: CGFloat = 15
+        let iconBoxSize = NSSize(width: 18, height: 16)
         let spacing: CGFloat = 4
         let textWidth = max(topWidth, bottomWidth)
-        let imageSize = NSSize(width: iconSize + spacing + textWidth, height: 20)
+        let imageSize = NSSize(width: iconBoxSize.width + spacing + textWidth, height: 20)
 
         let image = NSImage(size: imageSize, flipped: false) { rect in
             NSColor.black.set()
@@ -1012,14 +1047,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 systemSymbolName: symbolName,
                 accessibilityDescription: nil
             )?.withSymbolConfiguration(.init(pointSize: 14, weight: .semibold)) {
+                let fittedSize = MenuBarIconLayout.fittedSize(source: symbol.size, bounding: iconBoxSize)
                 symbol.draw(
-                    in: NSRect(x: 0, y: (rect.height - iconSize) / 2, width: iconSize, height: iconSize),
+                    in: NSRect(
+                        x: (iconBoxSize.width - fittedSize.width) / 2,
+                        y: (rect.height - fittedSize.height) / 2,
+                        width: fittedSize.width,
+                        height: fittedSize.height
+                    ),
                     from: .zero,
                     operation: .sourceOver,
                     fraction: 1
                 )
             }
-            let textX = iconSize + spacing
+            let textX = iconBoxSize.width + spacing
             (lines[0] as NSString).draw(
                 in: NSRect(x: textX, y: 9.7, width: textWidth, height: 10.3),
                 withAttributes: topAttributes
@@ -1051,6 +1092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func popoverDidClose(_ notification: Notification) {
         lastMenuBarRenderKey = nil
+        lastRenderedMenuBarPresentation = nil
         applyMenuBarAppearance()
     }
 
@@ -1107,10 +1149,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
               let others = data["others"] as? [String],
               let wifiDeviceValue = data["wifiDevice"] as? String else { return }
 
-        let wifiDevice = wifiDeviceValue.isEmpty ? nil : wifiDeviceValue
-        performPrivilegedChange(description: "切换到 \(target)") { [manager] in
-            try manager.switchToService(target, otherServices: others, wifiDevice: wifiDevice)
-        }
+        performServiceSwitch(
+            target: target,
+            otherServices: others,
+            wifiDevice: wifiDeviceValue.isEmpty ? nil : wifiDeviceValue
+        )
     }
 
     @objc private func showDNSSettingsMenu(_ sender: NSMenuItem) {
@@ -1253,6 +1296,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 }
             }
         }
+    }
+
+    private func performServiceSwitch(target: String, otherServices: [String], wifiDevice: String?) {
+        guard manager.privilegedAccessState == .ready else {
+            configurePrivilegedAccess { [weak self] in
+                self?.performServiceSwitch(target: target, otherServices: otherServices, wifiDevice: wifiDevice)
+            }
+            return
+        }
+        guard !isApplyingServiceSwitch else { return }
+
+        isApplyingServiceSwitch = true
+        applyOptimisticServiceSwitch(target: target, otherServices: otherServices)
+        statusItem.button?.toolTip = "正在切换到 \(target)…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.manager.switchToService(target, otherServices: otherServices, wifiDevice: wifiDevice)
+                DispatchQueue.main.async {
+                    self.isApplyingServiceSwitch = false
+                    for delay in [0.05, 1.5, 4.0] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            self?.refresh()
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isApplyingServiceSwitch = false
+                    self.refresh()
+                    self.showError(error)
+                }
+            }
+        }
+    }
+
+    private func applyOptimisticServiceSwitch(target: String, otherServices: [String]) {
+        let services = NetworkServiceTransition.switching(
+            services: lastServices,
+            target: target,
+            disabledServices: otherServices
+        )
+        guard services != lastServices else { return }
+        currentDownloadBytesPerSecond = 0
+        currentUploadBytesPerSecond = 0
+        networkStateGeneration &+= 1
+        lastServices = services
+        rebuildMenu(with: services)
+        if mainWindow?.isVisible == true { rebuildWindow(with: services) }
     }
 
     @objc private func showPrivilegedAccessSetup() {
@@ -2518,13 +2610,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
               let target = data["target"] as? String,
               let others = data["others"] as? [String],
               let wifiDeviceValue = data["wifiDevice"] as? String else { return }
-        performPrivilegedChange(description: "切换到 \(target)") { [manager] in
-            try manager.switchToService(
-                target,
-                otherServices: others,
-                wifiDevice: wifiDeviceValue.isEmpty ? nil : wifiDeviceValue
-            )
-        }
+        performServiceSwitch(
+            target: target,
+            otherServices: others,
+            wifiDevice: wifiDeviceValue.isEmpty ? nil : wifiDeviceValue
+        )
     }
 
     @objc private func windowDNSSettings(_ sender: NetworkActionButton) {

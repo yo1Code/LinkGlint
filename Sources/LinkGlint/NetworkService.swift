@@ -89,6 +89,38 @@ enum TrafficSampleCalculator {
     }
 }
 
+enum NetworkServiceTransition {
+    static func switching(
+        services: [NetworkService],
+        target: String,
+        disabledServices: [String]
+    ) -> [NetworkService] {
+        guard services.contains(where: { $0.name == target }) else { return services }
+        let disabledNames = Set(disabledServices)
+        return services.map { service in
+            let isTarget = service.name == target
+            let isDisabled = disabledNames.contains(service.name)
+            return NetworkService(
+                name: service.name,
+                orderIndex: service.orderIndex,
+                hardwarePort: service.hardwarePort,
+                device: service.device,
+                enabled: isTarget ? true : (isDisabled ? false : service.enabled),
+                connected: isTarget ? true : (isDisabled ? false : service.connected),
+                ipAddress: service.ipAddress,
+                subnetMask: service.subnetMask,
+                router: service.router,
+                dnsServers: service.dnsServers,
+                macAddress: service.macAddress,
+                ssid: service.ssid,
+                isPrimary: isTarget,
+                kind: service.kind,
+                wifiPowered: service.kind == .wifi && isTarget ? true : service.wifiPowered
+            )
+        }
+    }
+}
+
 struct NetworkDiagnostic {
     let date: Date
     let defaultInterface: String?
