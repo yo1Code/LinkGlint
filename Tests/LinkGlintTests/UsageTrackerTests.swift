@@ -63,6 +63,7 @@ final class UsageTrackerTests: XCTestCase {
         XCTAssertTrue(preferences.showMenuBarSpeed)
         XCTAssertTrue(preferences.menuBarSpeedTwoLines)
         XCTAssertFalse(preferences.menuBarSpeedInBits)
+        XCTAssertEqual(preferences.menuBarTrafficIndicatorStyle, .coloredDots)
         XCTAssertEqual(preferences.trafficRefreshInterval, 2)
         XCTAssertFalse(preferences.openWindowAtLaunch)
         XCTAssertFalse(preferences.autoRunDiagnostics)
@@ -70,11 +71,13 @@ final class UsageTrackerTests: XCTestCase {
         preferences.showMenuBarSpeed = false
         preferences.menuBarSpeedTwoLines = false
         preferences.menuBarSpeedInBits = true
+        preferences.menuBarTrafficIndicatorStyle = .coloredTriangles
         preferences.trafficRefreshInterval = 5
         XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarTitle)
         XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarSpeed)
         XCTAssertFalse(AppPreferences(defaults: defaults).menuBarSpeedTwoLines)
         XCTAssertTrue(AppPreferences(defaults: defaults).menuBarSpeedInBits)
+        XCTAssertEqual(AppPreferences(defaults: defaults).menuBarTrafficIndicatorStyle, .coloredTriangles)
         XCTAssertEqual(AppPreferences(defaults: defaults).trafficRefreshInterval, 5)
     }
 

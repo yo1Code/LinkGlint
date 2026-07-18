@@ -991,7 +991,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             panelIsOpen: statusPopover.isShown
         )
         let presentation = renderState.presentation
-        let renderKey = "\(renderState.symbolName)|\(presentation.usesTwoLines)|\(presentation.text)"
+        let indicatorStyle = preferences.menuBarTrafficIndicatorStyle
+        let appearanceName = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? ""
+        let renderKey = "\(renderState.symbolName)|\(presentation.usesTwoLines)|\(indicatorStyle.rawValue)|\(appearanceName)|\(presentation.text)"
         guard renderKey != lastMenuBarRenderKey else { return }
         lastMenuBarRenderKey = renderKey
         lastRenderedMenuBarPresentation = presentation
@@ -999,13 +1001,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             button.attributedTitle = NSAttributedString(string: "")
             button.image = twoLineMenuBarImage(
                 symbolName: renderState.symbolName,
-                text: presentation.text
+                text: presentation.text,
+                indicatorStyle: indicatorStyle,
+                appearance: button.effectiveAppearance
             )
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
             statusItem.length = ceil(button.image?.size.width ?? NSStatusItem.squareLength) + 8
         } else {
-            let title = menuBarAttributedTitle(presentation.text)
+            let title = menuBarAttributedTitle(presentation.text, indicatorStyle: indicatorStyle)
             button.attributedTitle = title
             button.image = menuBarImage(
                 symbolName: renderState.symbolName,
@@ -1022,14 +1026,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         button.setAccessibilityLabel("LinkGlint · \(menuBarStatusTitle) · 下载 \(formatRate(currentDownloadBytesPerSecond)) · 上传 \(formatRate(currentUploadBytesPerSecond))")
     }
 
-    private func twoLineMenuBarImage(symbolName: String, text: String) -> NSImage? {
+    private func twoLineMenuBarImage(
+        symbolName: String,
+        text: String,
+        indicatorStyle: MenuBarTrafficIndicatorStyle,
+        appearance: NSAppearance
+    ) -> NSImage? {
         let lines = text.components(separatedBy: "\n")
-        guard lines.count == 2 else { return menuBarImage(symbolName: symbolName, accessibilityDescription: text) }
+        guard lines.count == 2 else {
+            return menuBarImage(symbolName: symbolName, accessibilityDescription: text)
+        }
 
         let topFont = NSFont.systemFont(ofSize: 9.5, weight: .semibold)
         let bottomFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
-        let topAttributes: [NSAttributedString.Key: Any] = [.font: topFont, .foregroundColor: NSColor.black]
-        let bottomAttributes: [NSAttributedString.Key: Any] = [.font: bottomFont, .foregroundColor: NSColor.black]
+        let foregroundColor = indicatorStyle.usesColor ? NSColor.labelColor : NSColor.black
+        let topAttributes: [NSAttributedString.Key: Any] = [
+            .font: topFont,
+            .foregroundColor: foregroundColor
+        ]
+        let bottomAttributes: [NSAttributedString.Key: Any] = [
+            .font: bottomFont,
+            .foregroundColor: foregroundColor
+        ]
+        let centeredMarkerStyle = NSMutableParagraphStyle()
+        centeredMarkerStyle.alignment = .center
+        let centeredMarkerAttributes: [NSAttributedString.Key: Any] = [
+            .font: bottomFont,
+            .foregroundColor: foregroundColor,
+            .paragraphStyle: centeredMarkerStyle
+        ]
         let topWidth = ceil((lines[0] as NSString).size(withAttributes: topAttributes).width)
         let combinedColumns = MenuBarTrafficColumns.parse(combinedLine: lines[1])
 
@@ -1045,134 +1070,190 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let unitSamples = representativeRate?.unit.hasSuffix("bps") == true
             ? ["bps", "Kbps", "Mbps", "Gbps", "Tbps"]
             : ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
-        // Reserve a stable outer width for the active Byte/bit family. The live
-        // rate pair is drawn as one centered, naturally spaced group inside it.
-        let rateSamples = ["↓", "↑"].flatMap { direction in
-            ["0", "9.9", "10", "999"].flatMap { number in
-                unitSamples.map { "\(direction)\(number) \($0)" }
-            }
+        let valueSamples = ["0", "9.9", "10", "999"].flatMap { number in
+            unitSamples.map { "\(number) \($0)" }
         }
-        let rateGroupWidth = rateSamples.map {
+        let valueWidth = valueSamples.map {
             ceil(($0 as NSString).size(withAttributes: bottomAttributes).width)
         }.max() ?? 0
-        let groupGap: CGFloat = 4
+        let rateGeometry = MenuBarRatePairGeometry(
+            markerWidth: 8,
+            valueWidth: valueWidth,
+            markerValueGap: 1,
+            groupGap: 3
+        )
         let geometry: MenuBarTwoLineGeometry
         if combinedRates != nil {
-            geometry = .make(
-                topWidth: topWidth,
-                bottomWidth: rateGroupWidth * 2 + groupGap
-            )
+            geometry = .make(topWidth: topWidth, bottomWidth: rateGeometry.totalWidth)
         } else if speedOnlyRates != nil {
-            geometry = .make(
-                topWidth: rateGroupWidth,
-                bottomWidth: rateGroupWidth
-            )
+            geometry = .make(topWidth: rateGeometry.groupWidth, bottomWidth: rateGeometry.groupWidth)
         } else {
             let bottomWidth = ceil((lines[1] as NSString).size(withAttributes: bottomAttributes).width)
-            geometry = .make(
-                topWidth: topWidth,
-                bottomWidth: bottomWidth
-            )
+            geometry = .make(topWidth: topWidth, bottomWidth: bottomWidth)
         }
         let iconBoxSize = NSSize(width: 18, height: 16)
-        let spacing: CGFloat = 4
+        let textSpacing: CGFloat = 4
         let textWidth = geometry.textWidth
-        let imageSize = NSSize(width: iconBoxSize.width + spacing + textWidth, height: 20)
+        let imageSize = NSSize(width: iconBoxSize.width + textSpacing + textWidth, height: 20)
 
         let image = NSImage(size: imageSize, flipped: false) { rect in
-            NSColor.black.set()
-            if let symbol = NSImage(
-                systemSymbolName: symbolName,
-                accessibilityDescription: nil
-            )?.withSymbolConfiguration(.init(pointSize: 14, weight: .semibold)) {
-                let fittedSize = MenuBarIconLayout.fittedSize(source: symbol.size, bounding: iconBoxSize)
-                symbol.draw(
-                    in: NSRect(
-                        x: (iconBoxSize.width - fittedSize.width) / 2,
-                        y: (rect.height - fittedSize.height) / 2,
-                        width: fittedSize.width,
-                        height: fittedSize.height
-                    ),
-                    from: .zero,
-                    operation: .sourceOver,
-                    fraction: 1
-                )
-            }
-            let textX = iconBoxSize.width + spacing
-            func drawRate(
-                _ rate: MenuBarRateParts,
-                x: CGFloat,
-                y: CGFloat
-            ) {
-                let rateText = "\(rate.direction)\(rate.number) \(rate.unit)"
-                (rateText as NSString).draw(
-                    in: NSRect(x: x, y: y, width: rateGroupWidth, height: 10.2),
-                    withAttributes: bottomAttributes
-                )
-            }
+            var rendered = false
+            appearance.performAsCurrentDrawingAppearance {
+                if let baseSymbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+                    let pointConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+                    let configuration: NSImage.SymbolConfiguration
+                    if indicatorStyle.usesColor {
+                        configuration = pointConfiguration.applying(
+                            NSImage.SymbolConfiguration(paletteColors: [foregroundColor])
+                        )
+                    } else {
+                        configuration = pointConfiguration
+                    }
+                    if let symbol = baseSymbol.withSymbolConfiguration(configuration) {
+                        let fittedSize = MenuBarIconLayout.fittedSize(source: symbol.size, bounding: iconBoxSize)
+                        symbol.draw(
+                            in: NSRect(
+                                x: (iconBoxSize.width - fittedSize.width) / 2,
+                                y: (rect.height - fittedSize.height) / 2,
+                                width: fittedSize.width,
+                                height: fittedSize.height
+                            ),
+                            from: .zero,
+                            operation: .sourceOver,
+                            fraction: 1
+                        )
+                    }
+                }
 
-            func rateText(_ rate: MenuBarRateParts) -> String {
-                "\(rate.direction)\(rate.number) \(rate.unit)"
-            }
+                let downloadColor = NSColor(srgbRed: 0.20, green: 0.64, blue: 0.96, alpha: 1)
+                let uploadColor = NSColor(srgbRed: 1.00, green: 0.56, blue: 0.18, alpha: 1)
+                let textX = iconBoxSize.width + textSpacing
 
-            let centeredTopX = textX + geometry.centeredX(contentWidth: topWidth)
+                func drawMarker(_ direction: String, x: CGFloat, y: CGFloat) {
+                    let markerRect = NSRect(x: x, y: y, width: rateGeometry.markerWidth, height: 10.2)
+                    switch indicatorStyle {
+                    case .arrows:
+                        (direction as NSString).draw(in: markerRect, withAttributes: centeredMarkerAttributes)
+                    case .coloredDots:
+                        (direction == "↓" ? downloadColor : uploadColor).setFill()
+                        let diameter: CGFloat = 5.5
+                        NSBezierPath(
+                            ovalIn: NSRect(
+                                x: markerRect.midX - diameter / 2,
+                                y: markerRect.midY - diameter / 2,
+                                width: diameter,
+                                height: diameter
+                            )
+                        ).fill()
+                    case .coloredTriangles:
+                        let color = direction == "↓" ? downloadColor : uploadColor
+                        let attributes: [NSAttributedString.Key: Any] = [
+                            .font: NSFont.systemFont(ofSize: 7.5, weight: .bold),
+                            .foregroundColor: color,
+                            .paragraphStyle: centeredMarkerStyle,
+                            .baselineOffset: 0.25
+                        ]
+                        let glyph = direction == "↓" ? "▼" : "▲"
+                        (glyph as NSString).draw(in: markerRect, withAttributes: attributes)
+                    }
+                }
 
-            if let rates = combinedRates {
-                (lines[0] as NSString).draw(
-                    in: NSRect(x: centeredTopX, y: 9.7, width: topWidth, height: 10.3),
-                    withAttributes: topAttributes
-                )
-                let downloadText = rateText(rates.0)
-                let uploadText = rateText(rates.1)
-                let downloadWidth = ceil((downloadText as NSString).size(withAttributes: bottomAttributes).width)
-                let uploadWidth = ceil((uploadText as NSString).size(withAttributes: bottomAttributes).width)
-                let livePairWidth = downloadWidth + groupGap + uploadWidth
-                let livePairX = textX + geometry.centeredX(contentWidth: livePairWidth)
-                (downloadText as NSString).draw(
-                    in: NSRect(x: livePairX, y: -0.1, width: downloadWidth, height: 10.2),
-                    withAttributes: bottomAttributes
-                )
-                (uploadText as NSString).draw(
-                    in: NSRect(
-                        x: livePairX + downloadWidth + groupGap,
-                        y: -0.1,
-                        width: uploadWidth,
-                        height: 10.2
-                    ),
-                    withAttributes: bottomAttributes
-                )
-            } else if let rates = speedOnlyRates {
-                let downloadWidth = ceil((rateText(rates.0) as NSString).size(withAttributes: bottomAttributes).width)
-                let uploadWidth = ceil((rateText(rates.1) as NSString).size(withAttributes: bottomAttributes).width)
-                drawRate(rates.0, x: textX + geometry.centeredX(contentWidth: downloadWidth), y: 9.7)
-                drawRate(rates.1, x: textX + geometry.centeredX(contentWidth: uploadWidth), y: -0.1)
-            } else {
-                (lines[0] as NSString).draw(
-                    in: NSRect(x: centeredTopX, y: 9.7, width: topWidth, height: 10.3),
-                    withAttributes: topAttributes
-                )
-                (lines[1] as NSString).draw(
-                    in: NSRect(x: textX, y: -0.1, width: textWidth, height: 10.2),
-                    withAttributes: bottomAttributes
-                )
+                func drawRateGroup(_ rate: MenuBarRateParts, x: CGFloat, y: CGFloat) {
+                    drawMarker(rate.direction, x: x, y: y)
+                    let value = "\(rate.number) \(rate.unit)"
+                    (value as NSString).draw(
+                        in: NSRect(
+                            x: x + rateGeometry.valueX,
+                            y: y,
+                            width: rateGeometry.valueWidth,
+                            height: 10.2
+                        ),
+                        withAttributes: bottomAttributes
+                    )
+                }
+
+                if let rates = combinedRates {
+                    (lines[0] as NSString).draw(
+                        in: NSRect(x: textX, y: 9.7, width: topWidth, height: 10.3),
+                        withAttributes: topAttributes
+                    )
+                    drawRateGroup(rates.0, x: textX, y: -0.1)
+                    drawRateGroup(rates.1, x: textX + rateGeometry.uploadX, y: -0.1)
+                } else if let rates = speedOnlyRates {
+                    drawRateGroup(rates.0, x: textX, y: 9.7)
+                    drawRateGroup(rates.1, x: textX, y: -0.1)
+                } else {
+                    (lines[0] as NSString).draw(
+                        in: NSRect(x: textX, y: 9.7, width: topWidth, height: 10.3),
+                        withAttributes: topAttributes
+                    )
+                    (lines[1] as NSString).draw(
+                        in: NSRect(x: textX, y: -0.1, width: textWidth, height: 10.2),
+                        withAttributes: bottomAttributes
+                    )
+                }
+                rendered = true
             }
-            return true
+            return rendered
         }
-        image.isTemplate = true
+        image.isTemplate = !indicatorStyle.usesColor
         image.accessibilityDescription = text.replacingOccurrences(of: "\n", with: "，")
         return image
     }
 
-    private func menuBarAttributedTitle(_ text: String) -> NSAttributedString {
+    private func menuBarAttributedTitle(
+        _ text: String,
+        indicatorStyle: MenuBarTrafficIndicatorStyle
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium)
         ])
+        let downloadColor = NSColor(srgbRed: 0.20, green: 0.64, blue: 0.96, alpha: 1)
+        let uploadColor = NSColor(srgbRed: 1.00, green: 0.56, blue: 0.18, alpha: 1)
+        let replacements: [(source: String, marker: String, color: NSColor)]
+        switch indicatorStyle {
+        case .arrows:
+            replacements = [("↓", "↓", downloadColor), ("↑", "↑", uploadColor)]
+        case .coloredDots:
+            replacements = [("↓", "●", downloadColor), ("↑", "●", uploadColor)]
+        case .coloredTriangles:
+            replacements = [("↓", "▼", downloadColor), ("↑", "▲", uploadColor)]
+        }
+        var coloredMarkerRanges: [(range: NSRange, color: NSColor)] = []
+        for replacement in replacements {
+            var searchLocation = 0
+            while searchLocation < result.length {
+                let searchRange = NSRange(location: searchLocation, length: result.length - searchLocation)
+                let found = (result.string as NSString).range(of: replacement.source, options: [], range: searchRange)
+                guard found.location != NSNotFound else { break }
+                if replacement.marker != replacement.source {
+                    result.replaceCharacters(in: found, with: replacement.marker)
+                }
+                if indicatorStyle.usesColor {
+                    result.addAttribute(.foregroundColor, value: replacement.color, range: found)
+                    coloredMarkerRanges.append((found, replacement.color))
+                }
+                searchLocation = found.location + found.length
+            }
+        }
         let speedFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        let expression = try? NSRegularExpression(pattern: "[↓↑][^↓↑]+")
-        let range = NSRange(location: 0, length: (text as NSString).length)
-        expression?.enumerateMatches(in: text, range: range) { match, _, _ in
+        let expression = try? NSRegularExpression(pattern: "[↓↑●▼▲][^↓↑●▼▲]+")
+        let range = NSRange(location: 0, length: result.length)
+        expression?.enumerateMatches(in: result.string, range: range) { match, _, _ in
             guard let match else { return }
             result.addAttribute(.font, value: speedFont, range: match.range)
+        }
+        if indicatorStyle.usesColor {
+            let markerSize: CGFloat = indicatorStyle == .coloredDots ? 8.5 : 7.5
+            let markerFont = NSFont.systemFont(ofSize: markerSize, weight: .bold)
+            for marker in coloredMarkerRanges {
+                result.addAttributes([
+                    .font: markerFont,
+                    .foregroundColor: marker.color,
+                    .kern: 1.0,
+                    .baselineOffset: 0.25
+                ], range: marker.range)
+            }
         }
         return result
     }
@@ -1944,7 +2025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 570),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 592),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -1986,6 +2067,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             key: "menuBarSpeedInBits",
             value: preferences.menuBarSpeedInBits
         )
+        let indicatorTitle = NSTextField(labelWithString: "上下行标记")
+        let indicatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        indicatorPopup.removeAllItems()
+        for style in MenuBarTrafficIndicatorStyle.allCases {
+            let item = NSMenuItem(title: style.title, action: nil, keyEquivalent: "")
+            item.representedObject = style.rawValue
+            indicatorPopup.menu?.addItem(item)
+        }
+        let selectedStyleIndex = MenuBarTrafficIndicatorStyle.allCases.firstIndex(
+            of: preferences.menuBarTrafficIndicatorStyle
+        ) ?? 0
+        indicatorPopup.selectItem(at: selectedStyleIndex)
+        indicatorPopup.target = self
+        indicatorPopup.action = #selector(trafficIndicatorStyleChanged(_:))
+        indicatorPopup.controlSize = .small
+        let indicatorSpacer = NSView()
+        indicatorSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let indicatorRow = NSStackView(views: [indicatorTitle, indicatorSpacer, indicatorPopup])
+        indicatorRow.orientation = .horizontal
+        indicatorRow.alignment = .centerY
         let intervalTitle = NSTextField(labelWithString: "网速刷新间隔")
         let intervalPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         intervalPopup.removeAllItems()
@@ -2036,7 +2137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         loginItemStatusLabel?.textColor = .secondaryLabelColor
         let generalStack = NSStackView(views: [
             loginRow, loginItemStatusLabel!, menuTitle, menuSpeed,
-            menuSpeedTwoLines, menuSpeedBits, intervalRow, openWindow, autoDiagnostic
+            menuSpeedTwoLines, menuSpeedBits, indicatorRow, intervalRow, openWindow, autoDiagnostic
         ])
         generalStack.orientation = .vertical
         generalStack.alignment = .width
@@ -2187,6 +2288,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         previousTrafficCounters.removeAll()
         scheduleTrafficTimer()
         sampleTraffic()
+    }
+
+    @objc private func trafficIndicatorStyleChanged(_ sender: NSPopUpButton) {
+        guard let rawValue = sender.selectedItem?.representedObject as? String,
+              let style = MenuBarTrafficIndicatorStyle(rawValue: rawValue) else { return }
+        preferences.menuBarTrafficIndicatorStyle = style
+        lastMenuBarRenderKey = nil
+        applyMenuBarAppearance()
     }
 
     @objc private func closePreferences() {

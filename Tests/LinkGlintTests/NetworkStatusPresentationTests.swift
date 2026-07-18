@@ -98,6 +98,23 @@ final class NetworkStatusPresentationTests: XCTestCase {
         XCTAssertEqual(narrowGeometry, wideGeometry)
     }
 
+    func testTrafficIndicatorStylesAndFixedMarkerColumns() {
+        XCTAssertEqual(MenuBarTrafficIndicatorStyle.coloredDots.title, "蓝橙圆点（推荐）")
+        XCTAssertTrue(MenuBarTrafficIndicatorStyle.coloredTriangles.usesColor)
+        XCTAssertFalse(MenuBarTrafficIndicatorStyle.arrows.usesColor)
+
+        let geometry = MenuBarRatePairGeometry(
+            markerWidth: 8,
+            valueWidth: 42,
+            markerValueGap: 1,
+            groupGap: 3
+        )
+        XCTAssertEqual(geometry.valueX, 9)
+        XCTAssertEqual(geometry.groupWidth, 51)
+        XCTAssertEqual(geometry.uploadX, 54)
+        XCTAssertEqual(geometry.totalWidth, 105)
+    }
+
     func testTrafficRateUsesStandardReadableUnits() {
         XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 0, usesBits: false), "0 B/s")
         XCTAssertEqual(TrafficRateFormatter.string(bytesPerSecond: 999, usesBits: false), "999 B/s")

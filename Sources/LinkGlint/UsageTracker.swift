@@ -86,6 +86,7 @@ struct AppPreferences {
             // and live traffic are visible.
             "menuBarSpeedTwoLines": true,
             "menuBarSpeedInBits": false,
+            "menuBarTrafficIndicatorStyle": MenuBarTrafficIndicatorStyle.coloredDots.rawValue,
             "trafficRefreshInterval": 2.0,
             // A login item should start quietly in the menu bar. Users who use
             // the management window continuously can opt into showing it.
@@ -112,6 +113,15 @@ struct AppPreferences {
     var menuBarSpeedInBits: Bool {
         get { defaults.bool(forKey: "menuBarSpeedInBits") }
         nonmutating set { defaults.set(newValue, forKey: "menuBarSpeedInBits") }
+    }
+
+    var menuBarTrafficIndicatorStyle: MenuBarTrafficIndicatorStyle {
+        get {
+            MenuBarTrafficIndicatorStyle(
+                rawValue: defaults.string(forKey: "menuBarTrafficIndicatorStyle") ?? ""
+            ) ?? .coloredDots
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: "menuBarTrafficIndicatorStyle") }
     }
 
     var trafficRefreshInterval: TimeInterval {

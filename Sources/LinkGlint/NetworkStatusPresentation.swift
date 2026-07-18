@@ -1,5 +1,21 @@
 import Foundation
 
+enum MenuBarTrafficIndicatorStyle: String, CaseIterable, Equatable {
+    case coloredDots
+    case coloredTriangles
+    case arrows
+
+    var title: String {
+        switch self {
+        case .coloredDots: return "蓝橙圆点（推荐）"
+        case .coloredTriangles: return "彩色方向三角"
+        case .arrows: return "经典上下箭头"
+        }
+    }
+
+    var usesColor: Bool { self != .arrows }
+}
+
 struct NetworkStatusPresentation: Equatable {
     let title: String
     let symbolName: String
@@ -98,6 +114,18 @@ struct MenuBarTwoLineGeometry: Equatable {
     func centeredX(contentWidth: CGFloat) -> CGFloat {
         max((textWidth - contentWidth) / 2, 0)
     }
+}
+
+struct MenuBarRatePairGeometry: Equatable {
+    let markerWidth: CGFloat
+    let valueWidth: CGFloat
+    let markerValueGap: CGFloat
+    let groupGap: CGFloat
+
+    var valueX: CGFloat { markerWidth + markerValueGap }
+    var groupWidth: CGFloat { valueX + valueWidth }
+    var uploadX: CGFloat { groupWidth + groupGap }
+    var totalWidth: CGFloat { uploadX + groupWidth }
 }
 
 struct MenuBarRenderState: Equatable {
