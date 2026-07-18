@@ -117,6 +117,37 @@ final class NetworkManagerTests: XCTestCase {
 }
 
 final class TrafficSampleCalculatorTests: XCTestCase {
+    func testOptimisticDisableClearsTransientConnectionState() {
+        let ethernet = service(name: "USB LAN", device: "en7", primary: true, kind: .ethernet)
+
+        let result = NetworkServiceTransition.settingEnabled(
+            services: [ethernet],
+            named: "USB LAN",
+            enabled: false
+        )
+
+        XCTAssertFalse(result[0].enabled)
+        XCTAssertFalse(result[0].connected)
+        XCTAssertFalse(result[0].isPrimary)
+        XCTAssertNil(result[0].ipAddress)
+        XCTAssertNil(result[0].router)
+    }
+
+    func testOptimisticEnablePreservesKnownMetadataWithoutClaimingConnection() {
+        let disabled = service(name: "Wi-Fi", device: "en0", enabled: false, connected: false, primary: false, kind: .wifi)
+
+        let result = NetworkServiceTransition.settingEnabled(
+            services: [disabled],
+            named: "Wi-Fi",
+            enabled: true
+        )
+
+        XCTAssertTrue(result[0].enabled)
+        XCTAssertFalse(result[0].connected)
+        XCTAssertFalse(result[0].isPrimary)
+        XCTAssertEqual(result[0].device, "en0")
+    }
+
     func testOptimisticSwitchUpdatesPrimaryServiceImmediately() {
         let ethernet = service(name: "USB LAN", device: "en7", primary: true, kind: .ethernet)
         let wifi = service(name: "Wi-Fi", device: "en0", primary: false, kind: .wifi)
@@ -182,6 +213,8 @@ final class TrafficSampleCalculatorTests: XCTestCase {
     private func service(
         name: String,
         device: String,
+        enabled: Bool = true,
+        connected: Bool = true,
         primary: Bool,
         kind: NetworkService.Kind
     ) -> NetworkService {
@@ -190,9 +223,9 @@ final class TrafficSampleCalculatorTests: XCTestCase {
             orderIndex: 0,
             hardwarePort: nil,
             device: device,
-            enabled: true,
-            connected: true,
-            ipAddress: "192.0.2.2",
+            enabled: enabled,
+            connected: connected,
+            ipAddress: connected ? "192.0.2.2" : nil,
             subnetMask: nil,
             router: nil,
             dnsServers: [],

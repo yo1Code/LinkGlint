@@ -61,19 +61,19 @@ final class UsageTrackerTests: XCTestCase {
         let preferences = AppPreferences(defaults: defaults)
         XCTAssertTrue(preferences.showMenuBarTitle)
         XCTAssertTrue(preferences.showMenuBarSpeed)
-        XCTAssertFalse(preferences.menuBarSpeedTwoLines)
+        XCTAssertTrue(preferences.menuBarSpeedTwoLines)
         XCTAssertFalse(preferences.menuBarSpeedInBits)
         XCTAssertEqual(preferences.trafficRefreshInterval, 2)
-        XCTAssertTrue(preferences.openWindowAtLaunch)
+        XCTAssertFalse(preferences.openWindowAtLaunch)
         XCTAssertFalse(preferences.autoRunDiagnostics)
         preferences.showMenuBarTitle = false
         preferences.showMenuBarSpeed = false
-        preferences.menuBarSpeedTwoLines = true
+        preferences.menuBarSpeedTwoLines = false
         preferences.menuBarSpeedInBits = true
         preferences.trafficRefreshInterval = 5
         XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarTitle)
         XCTAssertFalse(AppPreferences(defaults: defaults).showMenuBarSpeed)
-        XCTAssertTrue(AppPreferences(defaults: defaults).menuBarSpeedTwoLines)
+        XCTAssertFalse(AppPreferences(defaults: defaults).menuBarSpeedTwoLines)
         XCTAssertTrue(AppPreferences(defaults: defaults).menuBarSpeedInBits)
         XCTAssertEqual(AppPreferences(defaults: defaults).trafficRefreshInterval, 5)
     }

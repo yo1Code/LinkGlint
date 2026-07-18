@@ -23,13 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var statusContextMenu: NSMenu?
     private var statusPanelServicesSnapshot: [NetworkService]?
     private weak var statusPanelUsageLabel: NSTextField?
+    private weak var statusPanelSummaryLabel: NSTextField?
+    private weak var statusContextUsageItem: NSMenuItem?
+    private weak var statusContextLoginItem: NSMenuItem?
     private var mainWindow: NSWindow!
     private var preferencesWindow: NSWindow?
     private var servicesStack: NSStackView!
     private var overviewLabel: NSTextField!
     private var diagnosticLabel: NSTextField!
     private var profilePopup: NSPopUpButton!
-    private var deleteProfileButton: NSButton!
     private var usageLabel: NSTextField!
     private var loginItemCheckbox: NSButton!
     private var loginItemStatusLabel: NSTextField?
@@ -48,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let pathMonitorQueue = DispatchQueue(label: "local.codex.LinkGlint.path-monitor")
     private var pendingPathRefresh: DispatchWorkItem?
     private var isRefreshing = false
+    private var isPerformingPrivilegedChange = false
     private var isApplyingServiceSwitch = false
     private var networkStateGeneration = 0
     private var isSamplingTraffic = false
@@ -64,6 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var trafficLabels: [String: NSTextField] = [:]
     private var lastAutoDiagnosticAt: Date?
     private var hasLoadedNetworkState = false
+    private var operationFeedback: (text: String, color: NSColor)?
+    private var operationFeedbackReset: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         createApplicationMenu()
@@ -92,9 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if preferences.openWindowAtLaunch {
             showMainWindow()
         }
-        refresh()
+        performRefresh(showingErrors: false)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
-            self?.refresh()
+            self?.performRefresh(showingErrors: false)
         }
         scheduleTrafficTimer()
         pathMonitor.pathUpdateHandler = { [weak self] _ in
@@ -164,15 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     private func showMenuBarRunningFeedback() {
-        // Closing the management window intentionally leaves the status item and
-        // timers alive. Brief feedback makes this behavior discoverable without
-        // interrupting the user's workflow with another dialog.
-        statusItem.button?.title = "仍在菜单栏运行"
-        statusItem.button?.imagePosition = .imageLeading
+        // Keep the status-item width stable. Replacing its title with a long
+        // confirmation caused nearby menu-bar items to jump every time the main
+        // window closed; the preference screen already explains this behavior.
         statusItem.button?.toolTip = "LinkGlint 仍在菜单栏运行；从菜单选择“退出 LinkGlint”可完全结束"
-        lastMenuBarRenderKey = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
-            self?.applyMenuBarAppearance()
             self?.updateStatusIcon(self?.lastServices ?? [])
         }
     }
@@ -189,7 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func refresh() {
-        guard !isRefreshing, !isApplyingServiceSwitch else { return }
+        performRefresh(showingErrors: true)
+    }
+
+    private func performRefresh(showingErrors: Bool) {
+        guard !isRefreshing, !isApplyingServiceSwitch, !isPerformingPrivilegedChange else { return }
         isRefreshing = true
         let generation = networkStateGeneration
 
@@ -200,7 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 DispatchQueue.main.async {
                     self.isRefreshing = false
                     guard generation == self.networkStateGeneration else {
-                        if !self.isApplyingServiceSwitch { self.refresh() }
+                        if !self.isApplyingServiceSwitch, !self.isPerformingPrivilegedChange {
+                            self.performRefresh(showingErrors: showingErrors)
+                        }
                         return
                     }
                     self.hasLoadedNetworkState = true
@@ -221,7 +228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             } catch {
                 DispatchQueue.main.async {
                     self.isRefreshing = false
-                    self.showError(error)
+                    if showingErrors {
+                        self.showError(error)
+                    } else {
+                        self.setOperationFeedback("状态刷新失败，稍后重试", color: .systemOrange, clearAfter: 3)
+                    }
                 }
             }
         }
@@ -417,47 +428,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             menu.addItem(priority)
         }
 
+        menu.addItem(.separator())
+
         let today = usageTracker.usage()
         let usageItem = NSMenuItem(
-            title: "今日用量：↓ \(formatBytes(today.receivedBytes)) · ↑ \(formatBytes(today.sentBytes))",
+            title: "今日记录：↓ \(formatBytes(today.receivedBytes)) · ↑ \(formatBytes(today.sentBytes))",
             action: nil,
             keyEquivalent: ""
         )
         usageItem.identifier = NSUserInterfaceItemIdentifier("daily-usage")
         usageItem.isEnabled = false
-        menu.addItem(usageItem)
+        statusContextUsageItem = usageItem
+        let activityMenu = NSMenu()
+        activityMenu.addItem(usageItem)
 
         let usageHistory = NSMenuItem(title: "查看用量历史…", action: #selector(showUsageHistory), keyEquivalent: "")
         usageHistory.target = self
-        menu.addItem(usageHistory)
+        activityMenu.addItem(usageHistory)
 
         let resetUsage = NSMenuItem(title: "重置今日用量…", action: #selector(resetTodayUsage), keyEquivalent: "")
         resetUsage.target = self
-        menu.addItem(resetUsage)
+        activityMenu.addItem(resetUsage)
+        activityMenu.addItem(.separator())
+
+        let diagnostic = NSMenuItem(title: "运行网络诊断", action: #selector(runDiagnostics), keyEquivalent: "d")
+        diagnostic.target = self
+        activityMenu.addItem(diagnostic)
+
+        let copyReport = NSMenuItem(title: "复制诊断报告", action: #selector(copyDiagnosticReport), keyEquivalent: "")
+        copyReport.target = self
+        activityMenu.addItem(copyReport)
+
+        let exportReport = NSMenuItem(title: "导出诊断报告…", action: #selector(exportDiagnosticReport), keyEquivalent: "")
+        exportReport.target = self
+        activityMenu.addItem(exportReport)
+
+        let activityItem = NSMenuItem(title: "用量与诊断", action: nil, keyEquivalent: "")
+        activityItem.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: nil)
+        activityItem.submenu = activityMenu
+        menu.addItem(activityItem)
 
         let showWindow = NSMenuItem(title: "显示主窗口", action: #selector(showMainWindow), keyEquivalent: "1")
         showWindow.target = self
         menu.addItem(showWindow)
 
-        let refreshItem = NSMenuItem(title: "刷新", action: #selector(refresh), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "刷新网络状态", action: #selector(refresh), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
-        let diagnostic = NSMenuItem(title: "运行网络诊断", action: #selector(runDiagnostics), keyEquivalent: "d")
-        diagnostic.target = self
-        menu.addItem(diagnostic)
-
-        let copyReport = NSMenuItem(title: "复制诊断报告", action: #selector(copyDiagnosticReport), keyEquivalent: "")
-        copyReport.target = self
-        menu.addItem(copyReport)
-
-        let exportReport = NSMenuItem(title: "导出诊断报告…", action: #selector(exportDiagnosticReport), keyEquivalent: "")
-        exportReport.target = self
-        menu.addItem(exportReport)
+        let settingsMenu = NSMenu()
 
         let settings = NSMenuItem(title: "打开网络设置…", action: #selector(openNetworkSettings), keyEquivalent: ",")
         settings.target = self
-        menu.addItem(settings)
+        settingsMenu.addItem(settings)
 
         let accessReady = manager.privilegedAccessState == .ready
         let accessItem = NSMenuItem(
@@ -467,21 +490,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         )
         accessItem.target = self
         accessItem.state = accessReady ? NSControl.StateValue.on : NSControl.StateValue.off
-        menu.addItem(accessItem)
+        settingsMenu.addItem(accessItem)
 
         let loginItem = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLoginMenu(_:)), keyEquivalent: "")
         loginItem.identifier = NSUserInterfaceItemIdentifier("launch-at-login")
         loginItem.target = self
         loginItem.state = loginItemState
-        menu.addItem(loginItem)
+        statusContextLoginItem = loginItem
+        settingsMenu.addItem(loginItem)
+
+        settingsMenu.addItem(.separator())
+
+        let preferencesItem = NSMenuItem(title: "偏好设置…", action: #selector(showPreferences), keyEquivalent: "")
+        preferencesItem.target = self
+        settingsMenu.addItem(preferencesItem)
 
         let aboutItem = NSMenuItem(title: "关于 LinkGlint", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
-        menu.addItem(aboutItem)
+        settingsMenu.addItem(aboutItem)
 
-        let preferencesItem = NSMenuItem(title: "LinkGlint 偏好设置…", action: #selector(showPreferences), keyEquivalent: "")
-        preferencesItem.target = self
-        menu.addItem(preferencesItem)
+        let settingsItem = NSMenuItem(title: "设置与帮助", action: nil, keyEquivalent: "")
+        settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        settingsItem.submenu = settingsMenu
+        menu.addItem(settingsItem)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 LinkGlint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -492,6 +523,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let active = services.first(where: { $0.isPrimary && $0.connected })
             ?? services.first(where: \.connected)
         applyMenuBarAppearance()
+        if let operationFeedback {
+            statusItem.button?.toolTip = "LinkGlint · \(operationFeedback.text)"
+            return
+        }
         statusItem.button?.toolTip = active.map {
             var text = "LinkGlint · 已连接 · \($0.name)"
             if let ssid = $0.ssid { text += " · \(ssid)" }
@@ -571,6 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         sectionCount.font = .systemFont(ofSize: 10)
         sectionCount.textColor = .secondaryLabelColor
         sectionCount.alignment = .right
+        statusPanelSummaryLabel = sectionCount
         let sectionSpacer = NSView()
         sectionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let sectionHeader = NSStackView(views: [sectionLabel, sectionSpacer, sectionCount])
@@ -626,6 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ])
         statusPopover.contentViewController = controller
         statusPopover.contentSize = NSSize(width: width, height: height)
+        updateOperationFeedbackDisplays()
     }
 
     private func statusPanelServiceRow(_ service: NetworkService, allServices: [NetworkService]) -> NSView {
@@ -712,7 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func statusPanelFooter(services: [NetworkService]) -> NSView {
         let usage = usageTracker.usage()
-        let usageText = NSTextField(labelWithString: "今日 ↓ \(formatBytes(usage.receivedBytes))  ↑ \(formatBytes(usage.sentBytes))")
+        let usageText = NSTextField(labelWithString: "今日记录 ↓ \(formatBytes(usage.receivedBytes))  ↑ \(formatBytes(usage.sentBytes))")
         statusPanelUsageLabel = usageText
         usageText.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         usageText.textColor = .secondaryLabelColor
@@ -742,8 +779,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         views.append(actionSpacer)
         let settings = compactIconButton(symbol: "gearshape", label: "网络设置", action: #selector(openNetworkSettingsFromPanel))
         views.append(settings)
-        let about = compactIconButton(symbol: "info.circle", label: "关于 LinkGlint", action: #selector(showAbout))
-        views.append(about)
         let main = compactIconButton(symbol: "macwindow", label: "全部详情", action: #selector(showMainWindowFromPanel))
         views.append(main)
         let actions = NSStackView(views: views)
@@ -776,6 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func statusPanelProfileButton() -> NSPopUpButton {
         let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.identifier = NSUserInterfaceItemIdentifier("network-operation-control")
         button.bezelStyle = .rounded
         button.controlSize = .small
         let menu = button.menu!
@@ -863,7 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         pendingPathRefresh?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.refresh()
+            self.performRefresh(showingErrors: false)
             if self.preferences.autoRunDiagnostics,
                self.lastAutoDiagnosticAt.map({ Date().timeIntervalSince($0) >= 30 }) ?? true {
                 self.lastAutoDiagnosticAt = Date()
@@ -1087,8 +1123,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         guard let data = sender.representedObject as? NSDictionary,
               let name = data["name"] as? String,
               let enable = data["enable"] as? Bool else { return }
+        guard enable || confirmDisablingActiveService(named: name) else { return }
 
-        performPrivilegedChange(description: enable ? "启用 \(name)" : "停用 \(name)") { [manager] in
+        let optimistic = NetworkServiceTransition.settingEnabled(
+            services: lastServices,
+            named: name,
+            enabled: enable
+        )
+        performPrivilegedChange(
+            description: enable ? "启用 \(name)" : "停用 \(name)",
+            optimisticServices: optimistic
+        ) { [manager] in
             try manager.setService(name, enabled: enable)
         }
     }
@@ -1097,6 +1142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         guard let data = sender.representedObject as? NSDictionary,
               let device = data["device"] as? String,
               let enable = data["enable"] as? Bool else { return }
+        guard enable || confirmPoweringOffActiveWiFi(device: device) else { return }
 
         performPrivilegedChange(description: enable ? "打开 Wi-Fi" : "关闭 Wi-Fi") { [manager] in
             try manager.setWiFiPower(device: device, enabled: enable)
@@ -1236,23 +1282,145 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
-    private func performPrivilegedChange(description: String, operation: @escaping () throws -> Void) {
+    private func updateOperationFeedbackDisplays() {
+        if let operationFeedback {
+            statusPanelSummaryLabel?.stringValue = operationFeedback.text
+            statusPanelSummaryLabel?.textColor = operationFeedback.color
+            adapterSummaryLabel?.stringValue = operationFeedback.text
+            adapterSummaryLabel?.textColor = operationFeedback.color
+            updateNetworkControlAvailability()
+            return
+        }
+
+        let connectedCount = lastServices.filter(\.connected).count
+        let enabledCount = lastServices.filter(\.enabled).count
+        statusPanelSummaryLabel?.stringValue = "\(connectedCount) 个已连接 · \(enabledCount) 个已启用"
+        statusPanelSummaryLabel?.textColor = .secondaryLabelColor
+        adapterSummaryLabel?.stringValue = "\(lastServices.count) 个服务 · \(connectedCount) 个已连接 · \(enabledCount) 个已启用"
+        adapterSummaryLabel?.textColor = .secondaryLabelColor
+        updateNetworkControlAvailability()
+    }
+
+    private func updateNetworkControlAvailability() {
+        let enabled = !isPerformingPrivilegedChange && !isApplyingServiceSwitch
+        setNetworkControlAvailability(in: mainWindow?.contentView, enabled: enabled)
+        setNetworkControlAvailability(in: statusPopover.contentViewController?.view, enabled: enabled)
+    }
+
+    private func setNetworkControlAvailability(in view: NSView?, enabled: Bool) {
+        guard let view else { return }
+        if let control = view as? NSControl,
+           control is NetworkToggleSwitch
+            || control is NetworkActionButton
+            || control.identifier?.rawValue == "network-operation-control" {
+            control.isEnabled = enabled
+        }
+        for subview in view.subviews {
+            setNetworkControlAvailability(in: subview, enabled: enabled)
+        }
+    }
+
+    private func setOperationFeedback(_ text: String, color: NSColor, clearAfter delay: TimeInterval? = nil) {
+        operationFeedbackReset?.cancel()
+        operationFeedback = (text, color)
+        updateOperationFeedbackDisplays()
+        statusItem.button?.toolTip = "LinkGlint · \(text)"
+
+        guard let delay else { return }
+        let expectedText = text
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.operationFeedback?.text == expectedText else { return }
+            self.operationFeedback = nil
+            self.updateOperationFeedbackDisplays()
+            self.updateStatusIcon(self.lastServices)
+        }
+        operationFeedbackReset = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func clearOperationFeedback() {
+        operationFeedbackReset?.cancel()
+        operationFeedback = nil
+        updateOperationFeedbackDisplays()
+        updateStatusIcon(lastServices)
+    }
+
+    private func confirmDisablingActiveService(named name: String) -> Bool {
+        guard let service = lastServices.first(where: { $0.name == name }), service.connected else { return true }
+        statusPopover.close()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "停用正在使用的“\(name)”？"
+        alert.informativeText = "当前连接可能立即中断；只有其他已启用的网络可用时，macOS 才能自动接替。"
+        alert.addButton(withTitle: "停用")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmPoweringOffActiveWiFi(device: String) -> Bool {
+        guard lastServices.contains(where: { $0.device == device && $0.kind == .wifi && $0.connected }) else { return true }
+        statusPopover.close()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "关闭正在使用的 Wi‑Fi？"
+        alert.informativeText = "无线连接会立即中断；只有其他已启用的网络可用时，macOS 才能自动接替。"
+        alert.addButton(withTitle: "关闭 Wi‑Fi")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func performPrivilegedChange(
+        description: String,
+        optimisticServices: [NetworkService]? = nil,
+        operation: @escaping () throws -> Void
+    ) {
         guard manager.privilegedAccessState == .ready else {
             configurePrivilegedAccess { [weak self] in
-                self?.performPrivilegedChange(description: description, operation: operation)
+                self?.performPrivilegedChange(
+                    description: description,
+                    optimisticServices: optimisticServices,
+                    operation: operation
+                )
             }
             return
         }
-        statusItem.button?.toolTip = "\(description)…"
+        guard !isPerformingPrivilegedChange, !isApplyingServiceSwitch else { return }
+
+        isPerformingPrivilegedChange = true
+        let rollbackServices = lastServices
+        networkStateGeneration &+= 1
+        if let optimisticServices, optimisticServices != lastServices {
+            lastServices = optimisticServices
+            rebuildMenu(with: optimisticServices)
+            if mainWindow?.isVisible == true { rebuildWindow(with: optimisticServices) }
+        }
+        setOperationFeedback("正在\(description)…", color: .systemOrange)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
             do {
                 try operation()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    self?.refresh()
+                DispatchQueue.main.async {
+                    self.isPerformingPrivilegedChange = false
+                    self.setOperationFeedback("已完成：\(description)", color: .systemGreen, clearAfter: 2)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        self?.performRefresh(showingErrors: false)
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.showError(error)
+                    self.isPerformingPrivilegedChange = false
+                    if optimisticServices != nil {
+                        self.networkStateGeneration &+= 1
+                        self.lastServices = rollbackServices
+                        self.rebuildMenu(with: rollbackServices)
+                        if self.mainWindow?.isVisible == true { self.rebuildWindow(with: rollbackServices) }
+                    }
+                    self.clearOperationFeedback()
+                    self.showError(error)
                 }
             }
         }
@@ -1265,27 +1433,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
             return
         }
-        guard !isApplyingServiceSwitch else { return }
+        guard !isApplyingServiceSwitch, !isPerformingPrivilegedChange else { return }
 
         isApplyingServiceSwitch = true
+        let rollbackServices = lastServices
         applyOptimisticServiceSwitch(target: target, otherServices: otherServices)
-        statusItem.button?.toolTip = "正在切换到 \(target)…"
+        setOperationFeedback("正在切换到 \(target)…", color: .systemOrange)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             do {
                 try self.manager.switchToService(target, otherServices: otherServices, wifiDevice: wifiDevice)
                 DispatchQueue.main.async {
                     self.isApplyingServiceSwitch = false
+                    self.setOperationFeedback("已切换到 \(target)", color: .systemGreen, clearAfter: 2)
                     for delay in [0.05, 1.5, 4.0] {
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                            self?.refresh()
+                            self?.performRefresh(showingErrors: false)
                         }
                     }
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.isApplyingServiceSwitch = false
-                    self.refresh()
+                    self.networkStateGeneration &+= 1
+                    self.lastServices = rollbackServices
+                    self.rebuildMenu(with: rollbackServices)
+                    if self.mainWindow?.isVisible == true { self.rebuildWindow(with: rollbackServices) }
+                    self.clearOperationFeedback()
+                    self.performRefresh(showingErrors: false)
                     self.showError(error)
                 }
             }
@@ -1360,6 +1535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.messageText = "移除免密码网络权限？"
         alert.informativeText = "移除会再显示一次管理员授权。之后再次修改网络时，需要重新完成首次配置。"
         alert.addButton(withTitle: "移除")
+        alert.buttons.first?.hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1477,11 +1653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         loginItemCheckbox?.toolTip = loginItemState == .mixed ? "需要在系统设置中批准" : nil
         loginItemStatusLabel?.stringValue = loginItemStatusText
         loginItemStatusLabel?.textColor = loginItemState == .mixed ? .systemOrange : .secondaryLabelColor
-        if let menu = statusContextMenu {
-            menu.items.first {
-                $0.identifier == NSUserInterfaceItemIdentifier("launch-at-login")
-            }?.state = loginItemState
-        }
+        statusContextLoginItem?.state = loginItemState
     }
 
     private var loginItemStatusText: String {
@@ -1497,15 +1669,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc private func copyMenuValue(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String else { return }
         copyToPasteboard(value)
-    }
-
-    @objc private func copyButtonValue(_ sender: NetworkActionButton) {
-        guard let value = sender.payload?["value"] as? String else { return }
-        copyToPasteboard(value)
-        sender.title = "已复制"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak sender] in
-            sender?.title = "复制"
-        }
     }
 
     private func copyToPasteboard(_ value: String) {
@@ -1603,17 +1766,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.messageText = "删除配置方案“\(profile.name)”？"
         alert.informativeText = "只会删除保存的方案，不会更改当前网络。"
         alert.addButton(withTitle: "删除")
+        alert.buttons.first?.hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         profileStore.delete(id: id)
         updateProfilePopup()
         rebuildMenu(with: lastServices)
-    }
-
-    @objc private func profileSelectionChanged() {
-        let token = profilePopup.selectedItem?.representedObject as? String ?? ""
-        deleteProfileButton?.isEnabled = token.hasPrefix("profile:")
     }
 
     private func updateProfilePopup(selecting selectedToken: String? = nil) {
@@ -1643,19 +1802,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         } else {
             profilePopup.selectItem(at: 0)
         }
-        profileSelectionChanged()
     }
 
     private func updateUsageDisplay() {
         let today = usageTracker.usage()
-        let text = "今日  ↓ \(formatBytes(today.receivedBytes))   ↑ \(formatBytes(today.sentBytes))"
+        let text = "今日记录  ↓ \(formatBytes(today.receivedBytes))   ↑ \(formatBytes(today.sentBytes))"
         if mainWindow?.isVisible == true { usageLabel?.stringValue = text }
         if statusPopover.isShown {
-            statusPanelUsageLabel?.stringValue = "今日 ↓ \(formatBytes(today.receivedBytes))  ↑ \(formatBytes(today.sentBytes))"
+            statusPanelUsageLabel?.stringValue = "今日记录 ↓ \(formatBytes(today.receivedBytes))  ↑ \(formatBytes(today.sentBytes))"
         }
-        if let item = statusContextMenu?.items.first(where: { $0.identifier?.rawValue == "daily-usage" }) {
-            item.title = "今日用量：↓ \(formatBytes(today.receivedBytes)) · ↑ \(formatBytes(today.sentBytes))"
-        }
+        statusContextUsageItem?.title = "今日记录：↓ \(formatBytes(today.receivedBytes)) · ↑ \(formatBytes(today.sentBytes))"
     }
 
     @objc private func resetTodayUsage() {
@@ -1664,6 +1820,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.messageText = "重置今天的网络用量？"
         alert.informativeText = "只会清除 LinkGlint 从本机接口统计的今日累计值，不会影响网络设置。"
         alert.addButton(withTitle: "重置")
+        alert.buttons.first?.hasDestructiveAction = true
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1678,7 +1835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             "\($0.dateKey)    ↓ \(formatBytes($0.receivedBytes))    ↑ \(formatBytes($0.sentBytes))"
         }.joined(separator: "\n")
         let alert = NSAlert()
-        alert.messageText = "最近网络用量"
+        alert.messageText = "最近 LinkGlint 用量记录"
         alert.informativeText = body
         alert.addButton(withTitle: "好")
         NSApp.activate(ignoringOtherApps: true)
@@ -2174,16 +2331,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         profileTitle.font = .systemFont(ofSize: 11, weight: .semibold)
         profileTitle.textColor = .secondaryLabelColor
         profilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        profilePopup.target = self
-        profilePopup.action = #selector(profileSelectionChanged)
+        profilePopup.identifier = NSUserInterfaceItemIdentifier("network-operation-control")
         profilePopup.controlSize = .small
         profilePopup.translatesAutoresizingMaskIntoConstraints = false
         let applyProfileButton = NSButton(title: "应用", target: self, action: #selector(applySelectedProfile))
+        applyProfileButton.identifier = NSUserInterfaceItemIdentifier("network-operation-control")
         applyProfileButton.bezelStyle = .rounded
         applyProfileButton.controlSize = .small
         applyProfileButton.contentTintColor = .systemBlue
-        deleteProfileButton = NSButton()
-        deleteProfileButton.isHidden = true
         let profileSpacer = NSView()
         profileSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         adapterSummaryLabel = NSTextField(labelWithString: "正在加载…")
@@ -2356,6 +2511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let connectedCount = services.filter(\.connected).count
         let enabledCount = services.filter(\.enabled).count
         adapterSummaryLabel?.stringValue = "\(services.count) 个服务 · \(connectedCount) 个已连接 · \(enabledCount) 个已启用"
+        adapterSummaryLabel?.textColor = .secondaryLabelColor
         updateLoginItemControls()
         updatePrivilegedAccessControls()
         trafficLabels.removeAll()
@@ -2376,6 +2532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         for service in services {
             servicesStack.addArrangedSubview(serviceCard(service, allServices: services))
         }
+        updateOperationFeedbackDisplays()
     }
 
     private func serviceCard(_ service: NetworkService, allServices: [NetworkService]) -> NSView {
@@ -2473,6 +2630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func serviceActionsButton(_ service: NetworkService, allServices: [NetworkService]) -> NSPopUpButton {
         let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.identifier = NSUserInterfaceItemIdentifier("network-operation-control")
         button.bezelStyle = .texturedRounded
         button.controlSize = .small
         button.setAccessibilityLabel("\(service.name) 的更多操作")
@@ -2550,26 +2708,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc private func windowToggleServiceSwitch(_ sender: NetworkToggleSwitch) {
         guard let name = sender.payload?["name"] as? String else { return }
         let enable = sender.state == .on
-        performPrivilegedChange(description: enable ? "启用 \(name)" : "停用 \(name)") { [manager] in
-            try manager.setService(name, enabled: enable)
+        guard enable || confirmDisablingActiveService(named: name) else {
+            sender.state = .on
+            sender.needsDisplay = true
+            return
         }
-    }
-
-    @objc private func windowToggleService(_ sender: NetworkActionButton) {
-        guard let data = sender.payload,
-              let name = data["name"] as? String,
-              let enable = data["enable"] as? Bool else { return }
-        performPrivilegedChange(description: enable ? "启用 \(name)" : "停用 \(name)") { [manager] in
+        let optimistic = NetworkServiceTransition.settingEnabled(
+            services: lastServices,
+            named: name,
+            enabled: enable
+        )
+        performPrivilegedChange(
+            description: enable ? "启用 \(name)" : "停用 \(name)",
+            optimisticServices: optimistic
+        ) { [manager] in
             try manager.setService(name, enabled: enable)
-        }
-    }
-
-    @objc private func windowToggleWiFi(_ sender: NetworkActionButton) {
-        guard let data = sender.payload,
-              let device = data["device"] as? String,
-              let enable = data["enable"] as? Bool else { return }
-        performPrivilegedChange(description: enable ? "打开 Wi-Fi" : "关闭 Wi-Fi") { [manager] in
-            try manager.setWiFiPower(device: device, enabled: enable)
         }
     }
 
@@ -2583,20 +2736,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             otherServices: others,
             wifiDevice: wifiDeviceValue.isEmpty ? nil : wifiDeviceValue
         )
-    }
-
-    @objc private func windowDNSSettings(_ sender: NetworkActionButton) {
-        guard let data = sender.payload,
-              let service = data["service"] as? String,
-              let servers = data["servers"] as? [String] else { return }
-        showDNSSettings(service: service, currentServers: servers)
-    }
-
-    @objc private func windowSetHighestPriority(_ sender: NetworkActionButton) {
-        guard let data = sender.payload,
-              let service = data["service"] as? String,
-              let order = data["order"] as? [String] else { return }
-        setHighestPriority(service: service, currentOrder: order)
     }
 
     private func showError(_ error: Error) {

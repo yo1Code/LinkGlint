@@ -15,9 +15,9 @@
 LinkGlint 将 Wi‑Fi、有线网络、VPN 和其他网络服务集中到菜单栏，方便查看状态、
 切换网络与处理常用配置。
 
-![LinkGlint 主界面](docs/images/linkglint-3.5.0.png)
+![LinkGlint 主界面](docs/images/linkglint-3.5.1.png)
 
-![LinkGlint 快捷面板](docs/images/linkglint-panel-3.5.0.png)
+![LinkGlint 快捷面板](docs/images/linkglint-panel-3.5.1.png)
 
 ## 下载
 
@@ -31,7 +31,8 @@ Apple Silicon 与 Intel Mac 的通用版本。需要 macOS 13 或更高版本。
 - 拖拽调整 macOS 网络服务优先级，也支持一键置顶
 - 设置 DNS、连接其他 Wi‑Fi、重命名服务和保存网络方案
 - 查看 IP、路由、DNS、流量用量并运行网络诊断
-- 原生“登录时启动”，关闭主窗口后继续在菜单栏运行
+- 原生“登录时启动”，默认安静驻留菜单栏，关闭主窗口后继续运行
+- 停用当前连接前确认，网络操作提供即时进度和失败回滚
 
 ## 使用
 

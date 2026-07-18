@@ -82,10 +82,14 @@ struct AppPreferences {
         defaults.register(defaults: [
             "showMenuBarTitle": true,
             "showMenuBarSpeed": true,
-            "menuBarSpeedTwoLines": false,
+            // Two lines keep the status item compact when both the network name
+            // and live traffic are visible.
+            "menuBarSpeedTwoLines": true,
             "menuBarSpeedInBits": false,
             "trafficRefreshInterval": 2.0,
-            "openWindowAtLaunch": true,
+            // A login item should start quietly in the menu bar. Users who use
+            // the management window continuously can opt into showing it.
+            "openWindowAtLaunch": false,
             "autoRunDiagnostics": false
         ])
     }

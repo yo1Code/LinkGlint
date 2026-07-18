@@ -90,6 +90,34 @@ enum TrafficSampleCalculator {
 }
 
 enum NetworkServiceTransition {
+    static func settingEnabled(
+        services: [NetworkService],
+        named target: String,
+        enabled: Bool
+    ) -> [NetworkService] {
+        guard services.contains(where: { $0.name == target }) else { return services }
+        return services.map { service in
+            guard service.name == target else { return service }
+            return NetworkService(
+                name: service.name,
+                orderIndex: service.orderIndex,
+                hardwarePort: service.hardwarePort,
+                device: service.device,
+                enabled: enabled,
+                connected: enabled ? service.connected : false,
+                ipAddress: enabled ? service.ipAddress : nil,
+                subnetMask: enabled ? service.subnetMask : nil,
+                router: enabled ? service.router : nil,
+                dnsServers: service.dnsServers,
+                macAddress: service.macAddress,
+                ssid: enabled ? service.ssid : nil,
+                isPrimary: enabled ? service.isPrimary : false,
+                kind: service.kind,
+                wifiPowered: service.wifiPowered
+            )
+        }
+    }
+
     static func switching(
         services: [NetworkService],
         target: String,
