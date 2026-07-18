@@ -31,5 +31,7 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 HarenaGodz. MIT License.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>LinkGlint 使用位置信息权限读取附近的 Wi-Fi 名称，便于从菜单栏直接选择并连接网络。</string>
 </dict>
 </plist>

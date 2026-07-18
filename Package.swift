@@ -9,7 +9,13 @@ let package = Package(
         .executable(name: "LinkGlintHelper", targets: ["LinkGlintHelper"])
     ],
     targets: [
-        .executableTarget(name: "LinkGlint"),
+        .executableTarget(
+            name: "LinkGlint",
+            linkerSettings: [
+                .linkedFramework("CoreLocation"),
+                .linkedFramework("CoreWLAN")
+            ]
+        ),
         .executableTarget(name: "LinkGlintHelper"),
         .testTarget(name: "LinkGlintTests", dependencies: ["LinkGlint"])
     ]

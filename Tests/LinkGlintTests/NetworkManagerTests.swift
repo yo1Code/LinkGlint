@@ -86,6 +86,38 @@ final class NetworkManagerTests: XCTestCase {
         XCTAssertNil(manager.parseCurrentWiFiNetwork("You are not associated with an AirPort network."))
     }
 
+    func testWiFiCatalogDeduplicatesBySSIDAndKeepsStrongestSignal() {
+        let networks = [
+            WiFiNetwork(ssid: "Office", rssiValue: -72, isSecure: true),
+            WiFiNetwork(ssid: "Guest", rssiValue: -55, isSecure: false),
+            WiFiNetwork(ssid: "Office", rssiValue: -48, isSecure: true),
+            WiFiNetwork(ssid: "   ", rssiValue: -30, isSecure: false)
+        ]
+
+        let result = WiFiNetworkCatalog.normalized(networks, currentSSID: nil)
+
+        XCTAssertEqual(result.map(\.ssid), ["Office", "Guest"])
+        XCTAssertEqual(result.first?.rssiValue, -48)
+    }
+
+    func testWiFiCatalogPinsCurrentNetworkBeforeStrongerNetworks() {
+        let networks = [
+            WiFiNetwork(ssid: "Current", rssiValue: -78, isSecure: true),
+            WiFiNetwork(ssid: "Nearby", rssiValue: -42, isSecure: true)
+        ]
+
+        let result = WiFiNetworkCatalog.normalized(networks, currentSSID: "Current")
+
+        XCTAssertEqual(result.map(\.ssid), ["Current", "Nearby"])
+    }
+
+    func testWiFiSignalDescriptionsUseReadableBands() {
+        XCTAssertEqual(WiFiNetwork(ssid: "A", rssiValue: -45, isSecure: true).signalDescription, "信号极佳")
+        XCTAssertEqual(WiFiNetwork(ssid: "B", rssiValue: -58, isSecure: true).signalDescription, "信号良好")
+        XCTAssertEqual(WiFiNetwork(ssid: "C", rssiValue: -67, isSecure: true).signalDescription, "信号一般")
+        XCTAssertEqual(WiFiNetwork(ssid: "D", rssiValue: -82, isSecure: true).signalDescription, "信号较弱")
+    }
+
     func testParsesTrafficCountersFromLinkRowsOnly() {
         let input = """
         Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll

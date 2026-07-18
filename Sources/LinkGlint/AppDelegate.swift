@@ -1,6 +1,7 @@
 import AppKit
 import Network
 import ServiceManagement
+import CoreLocation
 
 /// Shared four-point-grid metrics for the menu-bar panel and main window.
 private enum LinkGlintLayout {
@@ -13,13 +14,19 @@ private enum LinkGlintLayout {
     static let sectionRadius: CGFloat = 10
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, CLLocationManagerDelegate {
     private let manager = NetworkManager()
     private let profileStore = NetworkProfileStore()
     private let usageTracker = UsageTracker()
     private var preferences = AppPreferences()
     private var statusItem: NSStatusItem!
     private let statusPopover = NSPopover()
+    private let locationManager = CLLocationManager()
+    private var wifiPickerController: WiFiPickerViewController?
+    private var wifiPickerDevice: String?
+    private var wifiScanGeneration = 0
+    private var wifiPickerIsVisible = false
+    private var isRequestingLocationAuthorization = false
     private var statusContextMenu: NSMenu?
     private var statusPanelIsOpen = false
     private var statusPanelLocalEventMonitor: Any?
@@ -106,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         statusPopover.behavior = .applicationDefined
         statusPopover.animates = false
         statusPopover.delegate = self
+        locationManager.delegate = self
 
         createMainWindow()
         showLoadingMenu()
@@ -300,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         menu.addItem(.separator())
         addFooter(to: menu)
         statusContextMenu = menu
-        if statusPopover.isShown {
+        if statusPopover.isShown && !wifiPickerIsVisible {
             rebuildStatusPanel(with: services)
         }
         updateStatusIcon(services)
@@ -610,6 +618,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         statusItem.button?.highlight(false)
         statusItem.button?.setAccessibilityExpanded(false)
         removeStatusPanelDismissalMonitors()
+        wifiScanGeneration &+= 1
+        wifiPickerIsVisible = false
+        wifiPickerController = nil
+        statusPanelServicesSnapshot = nil
         statusPopover.performClose(nil)
     }
 
@@ -633,7 +645,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         statusPanelGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
+            let isAnsweringLocationPrompt = self?.isRequestingLocationAuthorization == true
             DispatchQueue.main.async {
+                guard !isAnsweringLocationPrompt else { return }
                 self?.closeStatusPanel()
             }
         }
@@ -642,6 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             object: NSApp,
             queue: .main
         ) { [weak self] _ in
+            guard self?.isRequestingLocationAuthorization != true else { return }
             self?.closeStatusPanel()
         }
     }
@@ -1456,6 +1471,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     func popoverWillClose(_ notification: Notification) {
+        wifiScanGeneration &+= 1
+        wifiPickerIsVisible = false
+        wifiPickerController = nil
+        statusPanelServicesSnapshot = nil
         statusPanelIsOpen = false
         statusItem.button?.highlight(false)
         statusItem.button?.setAccessibilityExpanded(false)
@@ -1558,10 +1577,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.informativeText = "输入一个或多个 IPv4/IPv6 地址，用逗号或空格分隔。留空即可恢复由 DHCP 或系统自动获取。"
         alert.addButton(withTitle: "应用")
         alert.addButton(withTitle: "取消")
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 26))
+        let input = NSTextField(string: "")
         input.placeholderString = "留空 = 自动，例如 1.1.1.1, 8.8.8.8"
         input.stringValue = currentServers.joined(separator: ", ")
-        alert.accessoryView = input
+        alert.accessoryView = AlertAccessoryView(width: 380, height: 26, content: input)
+        alert.window.initialFirstResponder = input
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -1577,31 +1597,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     @objc private func showJoinWiFi(_ sender: NetworkActionButton) {
         guard let device = sender.payload?["device"] as? String else { return }
-        let alert = NSAlert()
-        alert.messageText = "连接其他 Wi‑Fi"
-        alert.informativeText = "输入无线网络名称；开放网络可将密码留空。"
-        alert.addButton(withTitle: "连接")
-        alert.addButton(withTitle: "取消")
-        let networkName = NSTextField(string: "")
-        networkName.placeholderString = "网络名称（SSID）"
-        let password = NSSecureTextField(string: "")
-        password.placeholderString = "密码（可留空）"
-        let fields = NSStackView(views: [networkName, password])
-        fields.orientation = .vertical
-        fields.alignment = .width
-        fields.spacing = 8
-        fields.frame = NSRect(x: 0, y: 0, width: 340, height: 60)
-        alert.accessoryView = fields
-        statusPopover.close()
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let ssid = networkName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ssid.isEmpty else {
-            showError(NetworkError.commandFailed("请输入无线网络名称。"))
+        wifiPickerDevice = device
+
+        let picker = WiFiPickerViewController()
+        picker.onRefresh = { [weak self] in self?.beginWiFiScan() }
+        picker.onDismiss = { [weak self] in self?.restoreStatusPanelFromWiFiPicker() }
+        picker.onOpenLocationSettings = {
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") else { return }
+            NSWorkspace.shared.open(url)
+        }
+        picker.onConnect = { [weak self] ssid, password in
+            self?.connectToWiFi(device: device, ssid: ssid, password: password)
+        }
+        wifiPickerController = picker
+        wifiPickerIsVisible = true
+        statusPopover.contentViewController = picker
+        statusPopover.contentSize = NSSize(width: 360, height: 380)
+        picker.showLoading()
+        prepareWiFiScan()
+    }
+
+    private func restoreStatusPanelFromWiFiPicker() {
+        wifiScanGeneration &+= 1
+        wifiPickerIsVisible = false
+        wifiPickerController = nil
+        rebuildStatusPanel(with: lastServices)
+    }
+
+    private func prepareWiFiScan() {
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            wifiPickerController?.showLocationRequest()
+            isRequestingLocationAuthorization = true
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedAlways:
+            beginWiFiScan()
+        case .denied, .restricted:
+            wifiPickerController?.showLocationDenied()
+        @unknown default:
+            wifiPickerController?.showLocationDenied()
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        isRequestingLocationAuthorization = false
+        guard statusPopover.isShown, wifiPickerIsVisible else { return }
+        switch manager.authorizationStatus {
+        case .authorizedAlways:
+            beginWiFiScan()
+        case .denied, .restricted:
+            wifiPickerController?.showLocationDenied()
+        case .notDetermined:
+            break
+        @unknown default:
+            wifiPickerController?.showLocationDenied()
+        }
+    }
+
+    private func beginWiFiScan() {
+        guard let device = wifiPickerDevice, statusPopover.isShown, wifiPickerIsVisible else { return }
+        if lastServices.first(where: { $0.device == device })?.wifiPowered == false {
+            wifiPickerController?.showError("Wi-Fi 当前已关闭，请先在网络服务列表中打开 Wi-Fi。")
             return
         }
-        performPrivilegedChange(description: "连接 Wi‑Fi：\(ssid)") { [manager] in
-            try manager.joinWiFi(device: device, networkName: ssid, password: password.stringValue)
+        guard locationManager.authorizationStatus == .authorizedAlways else {
+            prepareWiFiScan()
+            return
+        }
+
+        wifiScanGeneration &+= 1
+        let generation = wifiScanGeneration
+        let currentSSID = lastServices.first(where: { $0.device == device })?.ssid
+        wifiPickerController?.showLoading()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = Result { try self.manager.scanWiFiNetworks(device: device, currentSSID: currentSSID) }
+            DispatchQueue.main.async {
+                guard self.statusPopover.isShown,
+                      self.wifiPickerIsVisible,
+                      self.wifiPickerDevice == device,
+                      self.wifiScanGeneration == generation else { return }
+                switch result {
+                case .success(let scan):
+                    self.wifiPickerController?.showNetworks(scan.networks, currentSSID: scan.currentSSID)
+                case .failure(let error):
+                    self.wifiPickerController?.showError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func connectToWiFi(device: String, ssid: String, password: String?) {
+        wifiScanGeneration &+= 1
+        closeStatusPanel()
+        performPrivilegedChange(description: "连接 Wi-Fi：\(ssid)") { [manager] in
+            try manager.joinWiFi(device: device, networkName: ssid, password: password)
         }
     }
 
@@ -1613,9 +1704,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.addButton(withTitle: "重命名")
         alert.addButton(withTitle: "取消")
         let input = NSTextField(string: oldName)
-        input.frame = NSRect(x: 0, y: 0, width: 340, height: 26)
+        alert.accessoryView = AlertAccessoryView(width: 340, height: 26, content: input)
+        alert.window.initialFirstResponder = input
         input.selectText(nil)
-        alert.accessoryView = input
         statusPopover.close()
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -2166,9 +2257,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.informativeText = "以后可从主窗口或菜单栏一键恢复所有网络服务和 Wi-Fi 电源状态。"
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let input = NSTextField(string: "")
         input.placeholderString = "例如：办公室、家庭、仅扩展坞"
-        alert.accessoryView = input
+        alert.accessoryView = AlertAccessoryView(width: 340, height: 26, content: input)
+        alert.window.initialFirstResponder = input
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -3207,6 +3299,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         alert.runModal()
     }
 
+}
+
+/// Keeps custom controls at a stable size inside `NSAlert` on newer macOS
+/// versions, where a stack view used directly as the accessory can collapse to
+/// the minimum width of its arranged subviews.
+private final class AlertAccessoryView: NSView {
+    private let preferredSize: NSSize
+
+    override var intrinsicContentSize: NSSize { preferredSize }
+
+    init(width: CGFloat, height: CGFloat, content: NSView) {
+        preferredSize = NSSize(width: width, height: height)
+        super.init(frame: NSRect(origin: .zero, size: preferredSize))
+
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: topAnchor),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
 }
 
 private final class NetworkActionButton: NSButton {

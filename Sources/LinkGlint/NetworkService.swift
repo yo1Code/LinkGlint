@@ -1,6 +1,46 @@
 import Foundation
 import Network
 import Darwin
+import CoreWLAN
+
+struct WiFiNetwork: Equatable {
+    let ssid: String
+    let rssiValue: Int
+    let isSecure: Bool
+
+    var signalDescription: String {
+        if rssiValue >= -50 { return "信号极佳" }
+        if rssiValue >= -60 { return "信号良好" }
+        if rssiValue >= -70 { return "信号一般" }
+        return "信号较弱"
+    }
+}
+
+struct WiFiScanResult: Equatable {
+    let networks: [WiFiNetwork]
+    let currentSSID: String?
+}
+
+enum WiFiNetworkCatalog {
+    static func normalized(_ networks: [WiFiNetwork], currentSSID: String?) -> [WiFiNetwork] {
+        var strongestBySSID: [String: WiFiNetwork] = [:]
+        for network in networks {
+            let ssid = network.ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !ssid.isEmpty else { continue }
+            let candidate = WiFiNetwork(ssid: ssid, rssiValue: network.rssiValue, isSecure: network.isSecure)
+            if candidate.rssiValue > (strongestBySSID[ssid]?.rssiValue ?? Int.min) {
+                strongestBySSID[ssid] = candidate
+            }
+        }
+        return strongestBySSID.values.sorted { lhs, rhs in
+            let lhsCurrent = lhs.ssid == currentSSID
+            let rhsCurrent = rhs.ssid == currentSSID
+            if lhsCurrent != rhsCurrent { return lhsCurrent }
+            if lhs.rssiValue != rhs.rssiValue { return lhs.rssiValue > rhs.rssiValue }
+            return lhs.ssid.localizedStandardCompare(rhs.ssid) == .orderedAscending
+        }
+    }
+}
 
 struct NetworkService: Hashable {
     enum Kind {
@@ -369,6 +409,25 @@ final class NetworkManager {
         var arguments = ["join-wifi", device, networkName]
         if let password, !password.isEmpty { arguments.append(password) }
         try privilegedHelper.run(arguments)
+    }
+
+    func scanWiFiNetworks(device: String, currentSSID: String?) throws -> WiFiScanResult {
+        guard let interface = CWWiFiClient.shared().interface(withName: device) else {
+            throw NetworkError.commandFailed("未找到 Wi-Fi 设备 \(device)。")
+        }
+        let resolvedCurrentSSID = currentSSID ?? interface.ssid()
+        let scanned = try interface.scanForNetworks(withSSID: nil).compactMap { network -> WiFiNetwork? in
+            guard let ssid = network.ssid else { return nil }
+            return WiFiNetwork(
+                ssid: ssid,
+                rssiValue: network.rssiValue,
+                isSecure: !network.supportsSecurity(.none)
+            )
+        }
+        return WiFiScanResult(
+            networks: WiFiNetworkCatalog.normalized(scanned, currentSSID: resolvedCurrentSSID),
+            currentSSID: resolvedCurrentSSID
+        )
     }
 
     func renameService(_ oldName: String, to newName: String) throws {
